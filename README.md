@@ -2,12 +2,15 @@
 
 基于 **Chromium + DrissionPage + turnstilePatch** 的免费 Grok 账号注册机。
 
-本分支在原版注册机基础上新增了两点：
+## 核心特性
 
-1. **Hotmail / Outlook 邮箱凭证池**  
-   支持 `邮箱----密码----ClientID----Token` 四段格式读取与 XOAUTH2 IMAP 收验证码。
-2. **协议优先的 CPA 导出**
-   注册拿到 SSO 后，优先用 **纯 HTTP PKCE authorization-code flow**（`curl_cffi` + `sso` cookie）铸造 CPA 用的 `xai-*.json`；旧 Device Flow 默认不再回退，避免产出 `/models` 可用但 chat 403 的坏 token。
+1. **多邮箱支持**  
+   支持 Hotmail/Outlook（四段凭证+XOAUTH2 IMAP）、CloudMail、Cloudflare、DuckMail、YYDS 等主流临时邮箱服务。
+
+2. **协议优先的 CPA 导出**  
+   注册拿到 SSO 后，优先用 **纯 HTTP PKCE authorization-code flow**（`curl_cffi` + `sso` cookie）铸造 CPA 用的 `xai-*.json`；协议失败默认不再回退旧 Device Flow，避免产出 `/models` 可用但 chat 403 的坏 token。
+
+## 产物说明
 
 一条成功链路会产出两类凭证：
 
@@ -21,17 +24,22 @@
 > `accounts.x.ai` OAuth 铸 OIDC，写成 CPA 的 `type=xai` 认证文件。
 > 本仓库的协议路径正是用 **SSO cookie 自动完成** 这一步（无需再弹浏览器时优先走协议）。
 
+## 核心模块
+
 本仓库**自包含** OIDC/CPA 铸造代码（`cpa_xai/`）：
 
 | 路径 | 说明 |
 |------|------|
-| `cpa_xai/pkce_mint.py` | SSO → 纯 HTTP PKCE authorization-code（推荐 CPA 路径） |
+| 文件 | 说明 |
+|------|------|
+| `cpa_xai/pkce_mint.py` | SSO → 纯 HTTP PKCE authorization-code（**推荐 CPA 路径**，数秒完成） |
 | `cpa_xai/protocol_mint.py` | 旧 SSO → OAuth Device Flow（兼容路径，默认不回退） |
-| `cpa_xai/mint.py` | PKCE 优先的导出编排 |
+| `cpa_xai/mint.py` | PKCE 优先的导出编排（协议 → 浏览器回退） |
 | `cpa_xai/browser_confirm.py` | 原逻辑：有头 Chromium 完成 consent |
-| `cpa_export.py` | 注册成功 hook |
+| `cpa_export.py` | 注册成功 hook（调用 mint 编排） |
+| `cpa_xai/probe.py` | CPA 写入后探测 `/v1/models` 与 `/v1/responses` 可用性 |
 | `scripts/backfill_cpa_xai_from_accounts.py` | 存量账号批量补 CPA |
-| `scripts/export_cpa_xai_from_grok_auth.py` | 从 `~/.grok/auth.json` 导出 |
+| `scripts/export_cpa_xai_from_grok_auth.py` | 从 `~/.grok/auth.json` 导出 CPA 文件 |
 
 ---
 
@@ -175,7 +183,7 @@ your@hotmail.com----mailPassword----xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx----0.AX
 
 ---
 
-## 整链示意
+## 架构流程
 
 ```
 [邮箱 Hotmail/Outlook 或 CloudMail 等]
@@ -193,9 +201,26 @@ your@hotmail.com----mailPassword----xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx----0.AX
  CLIProxyAPI :8317                    model=grok-4.5
 ```
 
+### CPA Mint 流程详解
+
+```
+注册成功拿到 sso cookie
+        ↓
+【优先】pkce_mint：curl_cffi + sso cookie
+   authorize → cookie-setter → consent → authorization_code → token
+        ↓ 成功 (~数秒)
+  cpa_auths/xai-<email>.json   mint_method=pkce
+        ↓ 失败
+  默认失败并记录；如显式开启 cpa_allow_device_flow_fallback，才回退旧 Device Flow / 浏览器路径
+```
+
+**性能对比**：
+- 协议路径（PKCE）：约 **数秒** 完成（含 probe）
+- 浏览器路径：约 **40–60s/号**
+
 ---
 
-## 环境
+## 环境准备
 
 | 依赖 | 说明 |
 |------|------|
@@ -205,17 +230,20 @@ your@hotmail.com----mailPassword----xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx----0.AX
 | 代理 | xAI / accounts.x.ai 通常需要，如 `http://127.0.0.1:7890` |
 | 可选 | 本机 grok2api `:8000`、CLIProxyAPI(CPA) `:8317` |
 
+### 依赖安装
+
 ```bash
 cd /path/to/grok_reg-protocol_cpa
 uv sync
-uv run python -c "from DrissionPage import Chromium; from curl_cffi import requests; print('OK')"
-```
-
-或用 mise：
-
-```bash
+# 或使用 mise
 mise install
 mise run deps
+```
+
+### 验证环境
+
+```bash
+uv run python -c "from DrissionPage import Chromium; from curl_cffi import requests; print('OK')"
 ```
 
 ---
@@ -377,12 +405,51 @@ curl -sS http://127.0.0.1:8317/v1/chat/completions \
 
 ## CLI 参数速查（`register_cli.py`）
 
-| 参数 | 含义 |
-|------|------|
-| `--extra N` | **再新注册 N 个**（推荐） |
-| `--count N` | 账号**总数目标**（含已有）；已达标则退出 |
-| `--threads N` | 并发 1–10 |
-| `--accounts-file` | 账本路径 |
+### 注册参数
+
+| 参数 | 含义 | 默认值 |
+|------|------|--------|
+| `--extra N` | **再新注册 N 个**（推荐） | 0 |
+| `--count N` | 账号**总数目标**（含已有）；已达标则退出 | 1 |
+| `--threads N` | 注册并发线程数（1-10） | 1 |
+| `--accounts-file` | 账本路径 | `./accounts_cli.txt` |
+| `--headless-register` | 注册浏览器使用无头模式 | 有头 |
+| `--headed-register` | 注册浏览器强制有头模式 | - |
+
+### CPA Mint 参数
+
+| 参数 | 含义 | 默认值 |
+|------|------|--------|
+| `--mint-workers N` | CPA mint 并发数：-1=用 config/auto；0=内联；1-10=固定 | -1（auto） |
+| `--mint-queue-max N` | mint 队列背压上限：-1=用 config/auto(2×workers)；0=不限制 | -1 |
+| `--inline-mint` | 强制注册线程内联 mint（调试用） | 异步队列 |
+
+### 性能参数
+
+| 参数 | 含义 | 默认值 |
+|------|------|--------|
+| `--fast` | 快速模式：压缩 sleep、关截图 | 开 |
+| `--no-fast` | 关闭快速模式 | - |
+| `--no-browser-reuse` | 每号强制 quit 浏览器 | 复用 |
+| `--browser-recycle-every N` | 复用 N 次后完整回收 | 25 |
+| `--cookie-snapshot` | 注册成功写 cookie 快照 | 关（fast 时） |
+
+### 使用示例
+
+```bash
+# 注册 1 个账号（推荐）
+uv run python -u register_cli.py --extra 1 --threads 1
+
+# 注册 5 个账号，并发 2
+uv run python -u register_cli.py --extra 5 --threads 2
+
+# 无头注册（默认仍建议有头，Turnstile 失败时去掉该参数）
+uv run python -u register_cli.py --extra 1 --threads 1 --headless-register
+
+# GUI 模式
+uv run python grok_register_ttk.py
+# 或 mise run gui / mise run register
+```
 
 ---
 

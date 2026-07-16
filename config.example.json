@@ -44,9 +44,13 @@
   "cloudflare_admin_password": "",
   "// cloudflare_auth_mode": "none | bearer | x-api-key | query-key，按你的 Worker 约定；不控制 x-admin-auth。",
   "cloudflare_auth_mode": "none",
+  "// cloudflare_path_domains": "获取域列表端点",
   "cloudflare_path_domains": "/api/domains",
+  "// cloudflare_path_accounts": "创建邮箱端点",
   "cloudflare_path_accounts": "/admin/new_address",
+  "// cloudflare_path_token": "获取邮箱 token 端点",
   "cloudflare_path_token": "/api/token",
+  "// cloudflare_path_messages": "获取邮件列表端点",
   "cloudflare_path_messages": "/api/parsed_mails",
 
   "// duckmail_api_key": "DuckMail API key（email_provider=duckmail）",
