@@ -88,6 +88,45 @@ class CpaMintFlowTests(unittest.TestCase):
         pkce.assert_not_called()
         device.assert_called_once()
 
+    def test_failed_probe_does_not_write_auth_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            with (
+                mock.patch.object(
+                    mint,
+                    "mint_with_sso_pkce",
+                    return_value={
+                        "access_token": "not.a.jwt",
+                        "refresh_token": "refresh",
+                        "id_token": "",
+                        "expires_in": 21600,
+                        "mint_method": "pkce",
+                    },
+                ),
+                mock.patch.object(
+                    mint,
+                    "probe_models",
+                    return_value={
+                        "ok": False,
+                        "status": 403,
+                        "error": '{"error":"Access denied"}',
+                        "model_ids": [],
+                        "has_grok_45": False,
+                    },
+                ),
+            ):
+                result = mint.mint_and_export(
+                    email="user@example.com",
+                    password="password",
+                    auth_dir=Path(td),
+                    sso="sso-cookie",
+                    probe=True,
+                    prefer_protocol=True,
+                )
+
+            self.assertFalse(result["ok"])
+            self.assertNotIn("path", result)
+            self.assertEqual(list(Path(td).glob("xai-*.json")), [])
+
     def test_rejects_unknown_protocol_flow(self):
         with tempfile.TemporaryDirectory() as td:
             with (

@@ -205,25 +205,23 @@ def mint_and_export(
                 "protocol_error": protocol_err,
             }
 
-    payload = build_cpa_xai_auth(
-        email=email,
-        access_token=tokens["access_token"],
-        refresh_token=tokens["refresh_token"],
-        id_token=tokens.get("id_token"),
-        expires_in=tokens.get("expires_in"),
-        base_url=base_url,
-    )
-    path = write_cpa_xai_auth(auth_dir, payload)
-    log(f"wrote {path}")
+    mint_method = str(tokens.get("mint_method") or "browser")
+    payload_extra: dict[str, Any] = {
+        "mint_method": mint_method,
+        "protocol_flow": protocol_flow,
+    }
+    if tokens.get("user_code"):
+        payload_extra["user_code"] = tokens.get("user_code")
+    if protocol_err:
+        payload_extra["protocol_error"] = protocol_err
 
     result: dict[str, Any] = {
         "ok": True,
         "email": email,
-        "path": str(path),
         "user_code": tokens.get("user_code"),
         "base_url": base_url,
         "proxy": proxy_log_label(resolved),
-        "mint_method": tokens.get("mint_method") or "browser",
+        "mint_method": mint_method,
     }
     if protocol_err and result["mint_method"] != "protocol":
         result["protocol_error"] = protocol_err
@@ -236,7 +234,13 @@ def mint_and_export(
             f"has_grok_45={pr.get('has_grok_45')} ids={pr.get('model_ids')} "
             f"error={str(pr.get('error') or '')[:200]}"
         )
-        if not pr.get("has_grok_45"):
+        if not pr.get("ok"):
+            result["ok"] = False
+            result["error"] = (
+                f"models probe failed status={pr.get('status')}: "
+                f"{pr.get('error') or 'unknown error'}"
+            )
+        elif not pr.get("has_grok_45"):
             result["ok"] = False
             result["error"] = "token ok but grok-4.5 not listed"
         if probe_chat and pr.get("has_grok_45"):
@@ -275,4 +279,20 @@ def mint_and_export(
                     f"chat probe failed after {ch.get('attempts') or '?'} attempt(s): "
                     f"{ch.get('error') or ch.get('status')}"
                 )
+    if not result.get("ok"):
+        log("probe failed; not writing CPA auth file")
+        return result
+
+    payload = build_cpa_xai_auth(
+        email=email,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        id_token=tokens.get("id_token"),
+        expires_in=tokens.get("expires_in"),
+        base_url=base_url,
+        extra=payload_extra,
+    )
+    path = write_cpa_xai_auth(auth_dir, payload)
+    result["path"] = str(path)
+    log(f"wrote {path}")
     return result

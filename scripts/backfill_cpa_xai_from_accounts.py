@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -25,6 +26,17 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from cpa_xai import existing_cpa_emails, mint_and_export, parse_accounts_file  # noqa: E402
+
+
+def _load_config_json(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    lines = [
+        line
+        for line in text.splitlines()
+        if not re.match(r'^\s*"(?://|#)', line)
+    ]
+    loaded = json.loads("\n".join(lines))
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def main() -> int:
@@ -63,7 +75,13 @@ def main() -> int:
     )
     ap.add_argument("--probe", action="store_true", default=True)
     ap.add_argument("--no-probe", action="store_false", dest="probe")
-    ap.add_argument("--probe-chat", action="store_true", default=False)
+    ap.add_argument(
+        "--probe-chat",
+        action="store_true",
+        default=True,
+        help="Also call /v1/responses; this catches /models-only tokens that later 403.",
+    )
+    ap.add_argument("--no-probe-chat", action="store_false", dest="probe_chat")
     ap.add_argument(
         "--browser-only",
         action="store_true",
@@ -111,7 +129,7 @@ def main() -> int:
     try:
         cfg_path = Path(args.config)
         if cfg_path.is_file():
-            loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
+            loaded = _load_config_json(cfg_path)
             if isinstance(loaded, dict):
                 cfg = {
                     k: v

@@ -305,13 +305,24 @@ class RegistrationCancelled(Exception):
     pass
 
 
+def _load_config_json(path: str):
+    """Load config JSON, ignoring template comment keys even if their values are stale."""
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    lines = [
+        line
+        for line in text.splitlines()
+        if not re.match(r'^\s*"(?://|#)', line)
+    ]
+    return json.loads("\n".join(lines))
+
+
 def load_config():
     load_env()
     global config
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
+            loaded = _load_config_json(CONFIG_FILE)
             # Allow "// comment" keys in config.example.json / config.json templates.
             if isinstance(loaded, dict):
                 loaded = {
@@ -320,7 +331,8 @@ def load_config():
                     if not (isinstance(k, str) and (k.startswith("//") or k.startswith("#")))
                 }
             config = {**DEFAULT_CONFIG, **loaded}
-        except Exception:
+        except Exception as e:
+            print(f"load config failed, using defaults: {e}")
             config = DEFAULT_CONFIG.copy()
     return config
 

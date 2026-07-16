@@ -241,19 +241,6 @@ def export_cpa_xai_for_account(
     if result.get("mint_method"):
         log(f"[cpa] mint_method={result.get('mint_method')}")
 
-    # By default, a failed post-write probe is only a warning: the CPA auth file
-    # has already been minted and written. Set cpa_probe_required=true to make
-    # missing /models grok-4.5 fail the export.
-    if (
-        not result.get("ok")
-        and result.get("path")
-        and str(result.get("error") or "").startswith("token ok but grok-4.5 not listed")
-        and not cfg.get("cpa_probe_required", False)
-    ):
-        result["ok"] = True
-        result["probe_warning"] = result.pop("error", "probe failed")
-        log(f"[cpa] probe warning ignored (file already written): {result.get('probe_warning')}")
-
     if result.get("ok") and result.get("path") and copy_to_hotload and cpa_dir:
         try:
             cpa_dir.mkdir(parents=True, exist_ok=True)
