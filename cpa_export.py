@@ -19,6 +19,33 @@ _DEFAULT_OUT = _REG_DIR / "cpa_auths"
 _DEFAULT_CPA = Path("")  # empty = do not assume a machine-local CPA path
 
 
+def _parse_probe_chat_retry_delays(raw: Any) -> list[float] | None:
+    """Parse cpa_probe_chat_retry_delays: null→default, []→no retry, list/str→seconds."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        parts = [p.strip() for p in text.replace(";", ",").split(",") if p.strip()]
+        vals: list[float] = []
+        for p in parts:
+            try:
+                vals.append(float(p))
+            except ValueError:
+                continue
+        return vals
+    if isinstance(raw, (list, tuple)):
+        vals = []
+        for item in raw:
+            try:
+                vals.append(float(item))
+            except (TypeError, ValueError):
+                continue
+        return vals
+    return None
+
+
 def _ensure_cpa_xai_on_path(tools_dir: str | Path | None = None) -> Path:
     """Put the parent of `cpa_xai` on sys.path. Default: this project root."""
     if tools_dir:
@@ -113,6 +140,15 @@ def export_cpa_xai_for_account(
     headless = bool(cfg.get("cpa_headless", False))
     probe = bool(cfg.get("cpa_probe_after_write", True))
     probe_chat = bool(cfg.get("cpa_probe_chat", True))
+    probe_chat_initial_delay = cfg.get("cpa_probe_chat_initial_delay_sec", None)
+    if probe_chat_initial_delay is not None:
+        try:
+            probe_chat_initial_delay = float(probe_chat_initial_delay)
+        except (TypeError, ValueError):
+            probe_chat_initial_delay = None
+    probe_chat_retry_delays = _parse_probe_chat_retry_delays(
+        cfg.get("cpa_probe_chat_retry_delays")
+    )
     timeout = float(cfg.get("cpa_mint_timeout_sec", 240))
     base_url = cfg.get("cpa_base_url") or "https://cli-chat-proxy.grok.com/v1"
     force_standalone = bool(cfg.get("cpa_force_standalone", True))
@@ -182,6 +218,8 @@ def export_cpa_xai_for_account(
         base_url=base_url,
         probe=probe,
         probe_chat=probe_chat,
+        probe_chat_initial_delay_sec=probe_chat_initial_delay,
+        probe_chat_retry_delays_sec=probe_chat_retry_delays,
         browser_timeout_sec=timeout,
         force_standalone=force_standalone,
         cookies=use_cookies,
