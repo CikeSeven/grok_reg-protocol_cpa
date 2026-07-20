@@ -413,8 +413,8 @@ def list_cpa(
         row["scan_reason"] = str(scan.get("reason") or "")
         row["scan_checked_at"] = str(scan.get("checked_at") or "")
         row["scan_action"] = str(scan.get("action") or "")
-        row["expired"] = timeutil.iso_to_beijing_iso(row.get("expired")) or row.get("expired", "")
-        row["scan_checked_at"] = timeutil.iso_to_beijing_iso(row.get("scan_checked_at")) or row.get("scan_checked_at", "")
+        row["expired"] = timeutil.iso_to_beijing_display(row.get("expired")) or row.get("expired", "")
+        row["scan_checked_at"] = timeutil.iso_to_beijing_display(row.get("scan_checked_at")) or row.get("scan_checked_at", "")
         row["mtime_iso"] = timeutil.timestamp_display(item["mtime"])
         page_items.append(row)
     return {

@@ -39,7 +39,7 @@ def timestamp_display(ts: float | int | str | None) -> str:
     if not ts:
         return ""
     try:
-        return datetime.fromtimestamp(float(ts), tz=BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S 北京时间")
+        return datetime.fromtimestamp(float(ts), tz=BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return ""
 
@@ -54,5 +54,19 @@ def iso_to_beijing_iso(value: Any) -> str:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(BEIJING_TZ).strftime("%Y-%m-%dT%H:%M:%S+08:00")
+    except Exception:
+        return text
+
+
+def iso_to_beijing_display(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        src = text[:-1] + "+00:00" if text.endswith("Z") else text
+        dt = datetime.fromisoformat(src)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return text

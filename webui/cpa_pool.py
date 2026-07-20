@@ -428,11 +428,11 @@ def _beijingize_record(row: dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
     for key in _PRESENTATION_TIME_KEYS:
         if out.get(key):
-            out[key] = timeutil.iso_to_beijing_iso(out.get(key))
+            out[key] = timeutil.iso_to_beijing_display(out.get(key))
     hist = out.get("history")
     if isinstance(hist, list):
         out["history"] = [
-            {**h, "at": timeutil.iso_to_beijing_iso(h.get("at")) if isinstance(h, dict) and h.get("at") else h.get("at")}
+            {**h, "at": timeutil.iso_to_beijing_display(h.get("at")) if isinstance(h, dict) and h.get("at") else h.get("at")}
             if isinstance(h, dict)
             else h
             for h in hist
@@ -478,7 +478,7 @@ class CpaPoolMonitor:
                 self._results = {str(k).lower(): _beijingize_record(dict(v)) for k, v in results.items() if isinstance(v, dict)}
             if isinstance(data.get("summary"), dict):
                 self._summary = _beijingize_record(dict(data["summary"]))
-            self._finished_at = timeutil.iso_to_beijing_iso(data.get("finished_at")) if data.get("finished_at") else ""
+            self._finished_at = timeutil.iso_to_beijing_display(data.get("finished_at")) if data.get("finished_at") else ""
         except Exception:
             return
 
@@ -535,8 +535,8 @@ class CpaPoolMonitor:
             logs = list(self._logs)[-240:]
             settings = dict(self._settings)
             running = self._running
-            started_at = timeutil.iso_to_beijing_iso(self._started_at) if self._started_at else ""
-            finished_at = timeutil.iso_to_beijing_iso(self._finished_at) if self._finished_at else ""
+            started_at = timeutil.iso_to_beijing_display(self._started_at) if self._started_at else ""
+            finished_at = timeutil.iso_to_beijing_display(self._finished_at) if self._finished_at else ""
             last_error = self._last_error
             next_scan_at = self._next_scan_at
             results_total = len(self._results)
