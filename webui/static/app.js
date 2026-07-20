@@ -1323,13 +1323,102 @@ function syncRegisterProtocolToggles() {
 
 /* ── tools ── */
 
-const convertState = { file: null, lastUrl: null, lastName: "" };
+const convertState = {
+  file: null,
+  lastUrl: null,
+  lastName: "",
+  detected: null,
+  inspectSeq: 0,
+  inspecting: false,
+};
+
+function setConvertTargetAvailability(available = null) {
+  const allowed = available ? new Set(available) : null;
+  const select = $("#convert-to");
+  for (const option of select.options) {
+    option.disabled = Boolean(allowed && option.value !== "auto" && !allowed.has(option.value));
+  }
+  if (select.selectedOptions[0]?.disabled) select.value = "auto";
+}
+
+function renderConvertInspect(payload, error = "") {
+  const panel = $("#convert-inspect");
+  panel.hidden = false;
+  panel.classList.toggle("error", Boolean(error));
+  if (error) {
+    $("#convert-detected-format").textContent = "无法识别";
+    $("#convert-detected-direction").textContent = error;
+    $("#convert-detected-count").textContent = "检查失败";
+    $("#convert-detected-providers").innerHTML = "";
+    $("#convert-detected-warnings").hidden = true;
+    return;
+  }
+  if (!payload) {
+    $("#convert-detected-format").textContent = "识别中";
+    $("#convert-detected-direction").textContent = "正在检查文件结构";
+    $("#convert-detected-count").textContent = "-";
+    $("#convert-detected-providers").innerHTML = "";
+    $("#convert-detected-warnings").hidden = true;
+    return;
+  }
+  $("#convert-detected-format").textContent = payload.input_format || "已识别";
+  $("#convert-detected-direction").textContent = payload.direction || "";
+  $("#convert-detected-count").textContent = `${payload.account_count || 0} 个账号`;
+  $("#convert-detected-providers").innerHTML = Object.entries(payload.providers || {})
+    .map(([provider, count]) => `<span><b>${esc(provider)}</b>${esc(count)}</span>`)
+    .join("");
+  const warningBox = $("#convert-detected-warnings");
+  const warnings = payload.warnings || [];
+  warningBox.hidden = !warnings.length;
+  warningBox.innerHTML = warnings.length
+    ? warnings.slice(0, 4).map((warning) => `<span>${esc(warning)}</span>`).join("")
+    : "";
+}
+
+async function inspectConvertFile(file) {
+  const seq = ++convertState.inspectSeq;
+  convertState.detected = null;
+  convertState.inspecting = true;
+  $("#convert-run").disabled = true;
+  setConvertTargetAvailability(null);
+  renderConvertInspect(null);
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const resp = await fetch("/api/tools/convert/inspect", { method: "POST", body: form });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(payload.error || `HTTP ${resp.status}`);
+    if (seq !== convertState.inspectSeq) return;
+    convertState.detected = payload;
+    renderConvertInspect(payload);
+    setConvertTargetAvailability(payload.available_targets || null);
+  } catch (err) {
+    if (seq !== convertState.inspectSeq) return;
+    renderConvertInspect(null, err.message);
+  } finally {
+    if (seq === convertState.inspectSeq) {
+      convertState.inspecting = false;
+      $("#convert-run").disabled = !convertState.detected;
+    }
+  }
+}
 
 function convertSetFile(file) {
   convertState.file = file || null;
+  convertState.detected = null;
+  convertState.inspectSeq += 1;
   $("#convert-file-label").textContent = file
     ? `${file.name}（${(file.size / 1024).toFixed(1)} KB）`
     : "拖拽文件到这里，或点击选择";
+  $("#convert-result").hidden = true;
+  $("#convert-status").textContent = "";
+  if (file) {
+    inspectConvertFile(file);
+  } else {
+    $("#convert-inspect").hidden = true;
+    $("#convert-run").disabled = false;
+    setConvertTargetAvailability(null);
+  }
 }
 
 function convertDownload(blob, filename) {
@@ -1343,9 +1432,28 @@ function convertDownload(blob, filename) {
   a.click();
 }
 
+function decodeConversionMeta(value) {
+  if (!value) return null;
+  try {
+    const padded = value + "=".repeat((4 - (value.length % 4)) % 4);
+    const bytes = Uint8Array.from(atob(padded.replace(/-/g, "+").replace(/_/g, "/")), (char) => char.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch (_) {
+    return null;
+  }
+}
+
 async function runConvert() {
   if (!convertState.file) {
     toast("请先选择要转换的文件", true);
+    return;
+  }
+  if (convertState.inspecting) {
+    toast("文件仍在识别中", true);
+    return;
+  }
+  if (!convertState.detected) {
+    toast("文件格式未通过识别", true);
     return;
   }
   const btn = $("#convert-run");
@@ -1368,10 +1476,19 @@ async function runConvert() {
       ? decodeURIComponent(match[1].replace(/"/g, ""))
       : `converted-${Date.now()}`;
     const blob = await resp.blob();
+    const meta = decodeConversionMeta(resp.headers.get("x-conversion-meta"));
     convertDownload(blob, filename);
     $("#convert-result").hidden = false;
     $("#convert-result-name").textContent = filename;
-    $("#convert-result-meta").textContent = `${(blob.size / 1024).toFixed(1)} KB · 已自动开始下载`;
+    const providerText = Object.entries(meta?.providers || {})
+      .map(([provider, count]) => `${provider} ${count}`)
+      .join(" · ");
+    $("#convert-result-meta").textContent = [
+      `${(blob.size / 1024).toFixed(1)} KB`,
+      meta?.count ? `${meta.count} 个账号` : "",
+      providerText,
+      "已自动开始下载",
+    ].filter(Boolean).join(" · ");
     status.textContent = "";
     toast("转换完成，已开始下载");
   } catch (err) {

@@ -825,24 +825,48 @@
           <div class="panel">
             <div class="panel-head">
               <h2><svg><use href="#i-swap"/></svg>账号格式转换</h2>
-              <span class="chip">sub2api ↔ CPA / CODEX</span>
+              <span class="chip">Sub2API ↔ CLIProxyAPI</span>
             </div>
             <div class="panel-body">
               <div class="dropzone" id="convert-dropzone">
                 <svg><use href="#i-file"/></svg>
                 <p id="convert-file-label">拖拽文件到这里，或点击选择</p>
-                <span>支持 sub2api .json、xai/codex .json、打包 .zip（单个文件）</span>
+                <span>支持单 JSON、账号数组、API 导出包装、混合或嵌套 ZIP</span>
                 <input id="convert-file" type="file" accept=".json,.zip" hidden>
+              </div>
+              <div class="convert-inspect" id="convert-inspect" hidden>
+                <div class="convert-inspect-head">
+                  <svg><use href="#i-search"/></svg>
+                  <div>
+                    <strong id="convert-detected-format">识别中</strong>
+                    <span id="convert-detected-direction">正在检查文件结构</span>
+                  </div>
+                  <span class="convert-account-count" id="convert-detected-count">0 个账号</span>
+                </div>
+                <div class="convert-provider-list" id="convert-detected-providers"></div>
+                <div class="convert-warnings" id="convert-detected-warnings" hidden></div>
               </div>
               <div class="form-grid" style="margin-top:14px">
                 <label class="field">
-                  <span>目标格式 <em>auto 自动识别</em></span>
+                  <span>目标格式 <em>根据内容自动决定方向</em></span>
                   <select id="convert-to" class="select wide">
-                    <option value="auto">自动（原生 → sub2api / sub2api → 原生包）</option>
-                    <option value="sub2">转为 sub2api JSON</option>
-                    <option value="cpa">转为 Grok CPA 包（xai-*.json .zip）</option>
-                    <option value="codex">转为 OpenAI CODEX 包（codex-*.json .zip）</option>
-                    <option value="native">按平台拆成原生包（CPA + CODEX）</option>
+                    <option value="auto">自动转换</option>
+                    <option value="sub2">Sub2API 账号包（单 JSON）</option>
+                    <option value="native">CLIProxyAPI 原生包（按 provider 拆分）</option>
+                    <optgroup label="CLIProxyAPI 常用 provider">
+                      <option value="xai">xAI / Grok CPA</option>
+                      <option value="codex">OpenAI Codex</option>
+                      <option value="claude">Anthropic Claude</option>
+                      <option value="gemini">Google Gemini CLI</option>
+                      <option value="antigravity">Google Antigravity</option>
+                      <option value="kimi">Kimi</option>
+                    </optgroup>
+                    <optgroup label="CLIProxyAPI 兼容 provider">
+                      <option value="qwen">Qwen（旧版）</option>
+                      <option value="iflow">iFlow（旧版）</option>
+                      <option value="vertex">Vertex AI</option>
+                      <option value="kiro">Kiro（旧版）</option>
+                    </optgroup>
                   </select>
                 </label>
                 <label class="field">
@@ -876,19 +900,19 @@
             <div class="panel-body format-help">
               <div class="fmt-block">
                 <strong>sub2api JSON</strong>
-                <p>通用交换格式，顶层含 <code>type / version / exported_at / proxies / accounts</code>，账号按 <code>platform</code> 区分 grok / openai。</p>
+                <p>支持账号数据本体、API 响应的 <code>data</code> 包装、导入请求包装和账号数组；保留 credentials、extra 与账号调度配置。</p>
               </div>
               <div class="fmt-block">
-                <strong>Grok CPA 包</strong>
-                <p>CLIProxyAPI 的 <code>xai-*.json</code>，字段含 access_token / refresh_token / expired / token_endpoint 等，与本项目 cpa_auths 产物一致。</p>
+                <strong>CLIProxyAPI 原生包</strong>
+                <p>按根字段 <code>type</code> 和内容特征识别 xai、codex、claude、gemini、antigravity、kimi、vertex 等 auth 文件。</p>
               </div>
               <div class="fmt-block">
-                <strong>OpenAI CODEX 包</strong>
-                <p><code>codex-*.json</code>，含 access_token / refresh_token 或 session_token、account_id、plan_type 等。</p>
+                <strong>客户端凭证</strong>
+                <p>可直接读取 Codex CLI <code>auth.json</code>、Claude Code <code>claudeAiOauth</code> 和 Gemini OAuth 凭证，并转换为 CLIProxyAPI 结构。</p>
               </div>
               <div class="fmt-block">
                 <strong>识别规则</strong>
-                <p><code>auto</code> 模式：输入为 sub2api 则按 platform 拆出 CPA / CODEX 两套 zip；输入为原生格式（单 json / 目录打包 zip / json 列表）则合并转为 sub2api。</p>
+                <p><code>auto</code> 优先检查 JSON 内容，其次参考文件名。未知插件 provider 会保留原字段并支持往返，不会强行套用已知账号结构。</p>
               </div>
             </div>
           </div>

@@ -277,12 +277,27 @@ http://127.0.0.1:8787
 |------|------|
 | 注册控制 | 启动/停止批量注册，看实时 stats 与日志 |
 | 账号账本 | 浏览/导出/删除 `accounts_cli.txt`，选中补 CPA |
-| CPA 管理 | 管理 `cpa_auths/xai-*.json`，补缺失 mint |
+| CPA 文件 | 管理、巡检和治理 `cpa_auths/xai-*.json`，补缺失 mint |
 | 邮箱凭证 | 导入/删除 Hotmail 四段凭证 |
+| 工具 | 自动识别并双向转换 Sub2API 账号包与 CLIProxyAPI auth 文件 |
 | 配置中心 | 编辑 `config.json` 常用项 |
 | 任务记录 | 右侧抽屉查看历史任务与停止 |
 
 WebUI **不另建数据库**，直接读写现有文件账本，与 CLI / ttk 共用数据。
+
+#### 账号格式转换
+
+- 输入支持单个 JSON、账号数组、Sub2API API 响应/导入包装、目录打包 ZIP 和嵌套 ZIP。
+- CLIProxyAPI provider 支持 `xai`、`codex`、`claude`、`gemini`、`antigravity`、`kimi`、`vertex`，并兼容旧版 `qwen`、`iflow`、`kiro`。
+- 可识别 Codex CLI `auth.json`、Claude Code `claudeAiOauth` 和 Gemini OAuth 凭证；未知插件 provider 会保留字段并支持往返。
+- Sub2API 代理绑定与 CLIProxyAPI `proxy_url` 双向转换；`oauth/apikey/setup-token/upstream/bedrock` 等账号类型会保留。
+
+也可从命令行预检或转换：
+
+```bash
+uv run python account_convert.py accounts.zip --inspect
+uv run python account_convert.py accounts.zip --to auto -o converted
+```
 
 ### 验证环境
 

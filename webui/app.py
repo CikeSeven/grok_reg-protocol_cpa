@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import mimetypes
 import threading
@@ -425,15 +426,44 @@ def create_app() -> FastAPI:
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    @app.post("/api/tools/convert/inspect")
+    async def tools_convert_inspect(file: UploadFile = File(...)) -> JSONResponse:
+        """Safely identify an account bundle without returning credential values."""
+        import shutil
+        import tempfile
+
+        import account_convert as ac
+
+        filename = file.filename or "input.json"
+        suffix = Path(filename).suffix.lower()
+        if suffix not in (".json", ".zip"):
+            return JSONResponse({"error": "仅支持 .json / .zip 文件"}, status_code=400)
+        content = await file.read()
+        if not content:
+            return JSONResponse({"error": "文件为空"}, status_code=400)
+        if len(content) > 200 * 1024 * 1024:
+            return JSONResponse({"error": "文件过大（>200MB）"}, status_code=400)
+
+        workdir = tempfile.mkdtemp(prefix="convert-inspect-")
+        try:
+            src = Path(workdir) / f"input{suffix}"
+            src.write_bytes(content)
+            return JSONResponse(ac.inspect_input(src))
+        except (ac.ConvertError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
     @app.post("/api/tools/convert")
     async def tools_convert(
         file: UploadFile = File(...),
         to: str = Form("auto"),
         note: str = Form(""),
     ):
-        """账号格式转换：sub2api ↔ Grok CPA(xai-*.json) / OpenAI Codex(codex-*.json)。
+        """Convert Sub2API bundles and CLIProxyAPI provider auth files.
 
-        上传 .json / .zip，返回转换后的文件下载（多包时打包为一个 zip）。
+        A multi-provider result is returned as a ZIP containing one provider ZIP
+        per account type. Conversion metadata is returned in a base64 JSON header.
         """
         import shutil
         import tempfile
@@ -459,28 +489,33 @@ def create_app() -> FastAPI:
             out_dir.mkdir()
             note_clean = (note or "").strip() or Path(filename).stem
 
-            target = str(to or "auto")
-            if target == "auto":
-                kind = ac.detect_input_kind(src)
-                target = "native" if kind == "sub2" else "sub2"
-            if target not in ("sub2", "cpa", "codex", "native"):
-                return JSONResponse({"error": f"不支持的目标格式: {target}"}, status_code=400)
+            result = ac.convert_path(
+                src,
+                out_dir,
+                target=str(to or "auto"),
+                note=note_clean,
+                keep_dir=False,
+            )
+            if result.get("json"):
+                files = [Path(result["json"])]
+            elif result.get("zip"):
+                files = [Path(result["zip"])]
+            else:
+                files = [Path(pack["zip"]) for pack in result.get("packs", [])]
+            if not files:
+                raise ac.ConvertError("转换完成但没有生成输出文件")
 
-            try:
-                if target == "sub2":
-                    result = ac.native_to_sub2(src, out_dir, note=note_clean)
-                    files = [Path(result["json"])]
-                elif target == "cpa":
-                    result = ac.sub2_to_cpa(src, out_dir, note=note_clean, keep_dir=False)
-                    files = [Path(result["zip"])]
-                elif target == "codex":
-                    result = ac.sub2_to_codex(src, out_dir, note=note_clean, keep_dir=False)
-                    files = [Path(result["zip"])]
-                else:
-                    result = ac.sub2_to_native(src, out_dir, note=note_clean, keep_dir=False)
-                    files = [Path(p["zip"]) for p in result["packs"]]
-            except ac.ConvertError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=400)
+            meta = {
+                "count": int(result.get("count") or sum(int(pack.get("count") or 0) for pack in result.get("packs", []))),
+                "providers": result.get("providers") or (
+                    {result["provider"]: result.get("count", 0)} if result.get("provider") else {}
+                ),
+                "warnings": list(result.get("warnings") or [])[:10],
+            }
+            meta_header = base64.urlsafe_b64encode(
+                json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).decode("ascii").rstrip("=")
+            response_headers = {"X-Conversion-Meta": meta_header}
 
             if len(files) == 1:
                 out = files[0]
@@ -489,6 +524,7 @@ def create_app() -> FastAPI:
                     out,
                     media_type=media,
                     filename=out.name,
+                    headers=response_headers,
                     background=BackgroundTask(shutil.rmtree, workdir, True),
                 )
             bundle = Path(workdir) / f"converted_{len(files)}packs.zip"
@@ -499,6 +535,7 @@ def create_app() -> FastAPI:
                 bundle,
                 media_type="application/zip",
                 filename=bundle.name,
+                headers=response_headers,
                 background=BackgroundTask(shutil.rmtree, workdir, True),
             )
         except Exception as exc:
