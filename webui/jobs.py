@@ -288,6 +288,7 @@ class JobRunner:
 
     def start_backfill(self, options: dict[str, Any]) -> dict[str, Any]:
         emails = [str(e).strip() for e in (options.get("emails") or []) if str(e).strip()]
+        exclude_emails = [str(e).strip().lower() for e in (options.get("exclude_emails") or []) if str(e).strip()]
         limit = max(0, int(options.get("limit") or 0))
         probe = bool(options.get("probe", True))
         probe_chat = bool(options.get("probe_chat", False))
@@ -299,6 +300,7 @@ class JobRunner:
             "backfill",
             {
                 "emails": emails,
+                "exclude_emails": exclude_emails,
                 "limit": limit,
                 "probe": probe,
                 "probe_chat": probe_chat,
@@ -644,6 +646,7 @@ class JobRunner:
 
             accounts = parse_accounts_file(accounts_path)
             emails = [e.lower() for e in job.options.get("emails") or []]
+            exclude_emails = {e.lower() for e in job.options.get("exclude_emails") or []}
             if emails:
                 accounts = [a for a in accounts if a.email.lower() in set(emails)]
 
@@ -655,6 +658,8 @@ class JobRunner:
 
             todo = []
             for acc in accounts:
+                if not emails and acc.email.lower() in exclude_emails:
+                    continue
                 if not emails and acc.email.lower() in have:
                     continue
                 if not acc.sso and not acc.password:
@@ -675,7 +680,8 @@ class JobRunner:
             probe_chat_enabled = bool(job.options.get("probe_chat", False))
             job.append_log(
                 f"待处理 {len(todo)} 个账号，workers={workers}, probe={probe_enabled}, "
-                f"probe_chat={probe_chat_enabled}, sleep={sleep_s:g}s, out={out_dir}"
+                f"probe_chat={probe_chat_enabled}, sleep={sleep_s:g}s, "
+                f"exclude={len(exclude_emails) if not emails else 0}, out={out_dir}"
             )
 
             proxy_raw = (cfg.get("cpa_proxy") or cfg.get("proxy") or "").strip()

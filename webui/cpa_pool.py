@@ -65,6 +65,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "soft_fail_action": "keep",
     "quota_action": "keep",
     "quota_cooldown_sec": 6 * 3600,
+    # auto refill: after governance removes/isolates files, start existing
+    # backfill job to mint missing CPA files from accounts_cli.txt.
+    "auto_refill": False,
+    "refill_target_active": 0,  # 0 = keep pre-scan active count
+    "refill_max_per_scan": 30,
+    "refill_workers": -1,
+    "refill_probe_chat": False,
 }
 
 TERMINAL_STATUSES = {
@@ -320,6 +327,11 @@ def settings_from_config(config: dict[str, Any] | None = None) -> dict[str, Any]
             "soft_fail_threshold": _coerce_int(cfg.get("cpa_pool_soft_fail_threshold"), int(s["soft_fail_threshold"]), min_v=1, max_v=100),
             "quota_threshold": _coerce_int(cfg.get("cpa_pool_quota_threshold"), int(s["quota_threshold"]), min_v=1, max_v=100),
             "quota_cooldown_sec": _coerce_int(cfg.get("cpa_pool_quota_cooldown_sec"), int(s["quota_cooldown_sec"]), min_v=60, max_v=30 * 86400),
+            "auto_refill": _coerce_bool(cfg.get("cpa_pool_auto_refill"), bool(s["auto_refill"])),
+            "refill_target_active": _coerce_int(cfg.get("cpa_pool_refill_target_active"), int(s["refill_target_active"]), min_v=0, max_v=100000),
+            "refill_max_per_scan": _coerce_int(cfg.get("cpa_pool_refill_max_per_scan"), int(s["refill_max_per_scan"]), min_v=1, max_v=10000),
+            "refill_workers": _coerce_int(cfg.get("cpa_pool_refill_workers"), int(s["refill_workers"]), min_v=-1, max_v=20),
+            "refill_probe_chat": _coerce_bool(cfg.get("cpa_pool_refill_probe_chat"), bool(s["refill_probe_chat"])),
             "hard_bad_action": _coerce_action(cfg.get("cpa_pool_hard_bad_action"), str(s["hard_bad_action"])),
             "refresh_failed_action": _coerce_action(cfg.get("cpa_pool_refresh_failed_action"), str(s["refresh_failed_action"])),
             "invalid_action": _coerce_action(cfg.get("cpa_pool_invalid_action"), str(s["invalid_action"])),
@@ -935,6 +947,48 @@ class CpaPoolMonitor:
             pass
         return {"ok": True, "total": len(results), "success": sum(1 for r in results if r.get("ok")), "items": results}
 
+    def _maybe_start_refill(self, *, settings: dict[str, Any], initial_total: int, trigger: str) -> dict[str, Any]:
+        if not bool(settings.get("auto_refill")):
+            return {"enabled": False, "started": False}
+        try:
+            current_total = len(store.list_cpa_index())
+        except Exception:
+            current_total = 0
+        target = int(settings.get("refill_target_active") or 0) or int(initial_total or 0)
+        need = max(0, target - current_total)
+        if need <= 0:
+            return {"enabled": True, "started": False, "target": target, "current": current_total, "need": 0}
+        limit = min(need, int(settings.get("refill_max_per_scan") or 30))
+        try:
+            from .jobs import runner
+
+            active = runner.active_job()
+            if active and active.status in {"queued", "running"}:
+                msg = f"auto_refill skipped: active job {active.kind} {active.id}"
+                self._log(msg)
+                return {"enabled": True, "started": False, "target": target, "current": current_total, "need": need, "error": msg}
+            try:
+                q_items = self.list_quarantine(page_size=10000).get("items") or []
+                exclude_emails = sorted({str(i.get("email") or "").lower() for i in q_items if str(i.get("email") or "").strip()})
+            except Exception:
+                exclude_emails = []
+            job = runner.start_backfill(
+                {
+                    "limit": limit,
+                    "probe": True,
+                    "probe_chat": bool(settings.get("refill_probe_chat")),
+                    "workers": int(settings.get("refill_workers") or -1),
+                    "sleep": 0,
+                    "exclude_emails": exclude_emails,
+                }
+            )
+            self._log(f"自动补号已启动：need={need} limit={limit} exclude={len(exclude_emails)} job={job.get('id')} trigger={trigger}")
+            return {"enabled": True, "started": True, "target": target, "current": current_total, "need": need, "limit": limit, "excluded": len(exclude_emails), "job": job}
+        except Exception as exc:  # noqa: BLE001
+            err = _mask_error(exc)
+            self._log(f"自动补号启动失败：need={need} error={err}")
+            return {"enabled": True, "started": False, "target": target, "current": current_total, "need": need, "error": err}
+
     def export_report(self) -> dict[str, Any]:
         return {"generated_at": _utc_now(), "status": self.status(), "results": self.list_results(page_size=10000).get("items", []), "quarantine": self.list_quarantine(page_size=10000).get("items", [])}
 
@@ -949,13 +1003,19 @@ class CpaPoolMonitor:
         settings["probe_chat"] = _coerce_bool(settings.get("probe_chat"), False)
         settings["refresh_before_probe"] = _coerce_bool(settings.get("refresh_before_probe"), True)
         settings["apply_policy"] = _coerce_bool(settings.get("apply_policy"), False)
+        settings["auto_refill"] = _coerce_bool(settings.get("auto_refill"), False)
         settings["refresh_skew_sec"] = _coerce_int(settings.get("refresh_skew_sec"), 2700, min_v=0, max_v=86400)
         settings["max_items_per_scan"] = _coerce_int(settings.get("max_items_per_scan"), 0, min_v=0, max_v=100000)
+        settings["refill_target_active"] = _coerce_int(settings.get("refill_target_active"), 0, min_v=0, max_v=100000)
+        settings["refill_max_per_scan"] = _coerce_int(settings.get("refill_max_per_scan"), 30, min_v=1, max_v=10000)
+        settings["refill_workers"] = _coerce_int(settings.get("refill_workers"), -1, min_v=-1, max_v=20)
+        settings["refill_probe_chat"] = _coerce_bool(settings.get("refill_probe_chat"), False)
         trigger = str(options.get("trigger") or "manual")
         self._settings = settings
         self._log(f"CPA 巡检开始：trigger={trigger} workers={settings['scan_workers']} probe_chat={settings['probe_chat']} refresh={settings['refresh_before_probe']} proxy={settings.get('probe_proxy')} policy={settings.get('apply_policy')}")
         try:
             index = list(store.list_cpa_index().values())
+            initial_total = len(index)
             emails = {str(e).strip().lower() for e in (options.get("emails") or []) if str(e).strip()}
             if emails:
                 index = [i for i in index if str(i.get("email") or "").lower() in emails]
@@ -968,6 +1028,13 @@ class CpaPoolMonitor:
                 self._progress = {"done": 0, "total": total}
                 self._summary = {"counts": {}, "actions": {}, "total": total, "trigger": trigger, "started_at": self._started_at}
             if total == 0:
+                if self._cancel.is_set():
+                    refill = {"enabled": bool(settings.get("auto_refill")), "started": False, "cancelled": True}
+                else:
+                    refill = self._maybe_start_refill(settings=settings, initial_total=initial_total, trigger=trigger)
+                elapsed = round(time.monotonic() - started, 2)
+                with self._lock:
+                    self._summary.update({"elapsed_sec": elapsed, "finished_at": _utc_now(), "refill": refill})
                 self._log("CPA 巡检：没有可检查的 xai-*.json")
                 return
 
@@ -1013,9 +1080,13 @@ class CpaPoolMonitor:
                     if self._cancel.is_set():
                         break
             elapsed = round(time.monotonic() - started, 2)
+            if self._cancel.is_set():
+                refill = {"enabled": bool(settings.get("auto_refill")), "started": False, "cancelled": True}
+            else:
+                refill = self._maybe_start_refill(settings=settings, initial_total=initial_total, trigger=trigger)
             with self._lock:
-                self._summary.update({"elapsed_sec": elapsed, "finished_at": _utc_now(), "refreshed": refreshed, "reenabled": reenabled, "actions": dict(actions)})
-            self._log(f"CPA 巡检完成：total={total} ok={counts.get('ok', 0)} refreshed={refreshed} actions={actions} elapsed={elapsed}s")
+                self._summary.update({"elapsed_sec": elapsed, "finished_at": _utc_now(), "refreshed": refreshed, "reenabled": reenabled, "actions": dict(actions), "refill": refill})
+            self._log(f"CPA 巡检完成：total={total} ok={counts.get('ok', 0)} refreshed={refreshed} actions={actions} refill={refill.get('started', False)} elapsed={elapsed}s")
         except Exception as exc:  # noqa: BLE001
             self._last_error = _mask_error(exc)
             self._log(f"CPA 巡检异常：{exc}")

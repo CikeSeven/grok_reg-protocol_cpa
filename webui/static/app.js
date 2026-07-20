@@ -180,7 +180,7 @@ const CONFIG_FIELDS = {
     ["cpa_probe_after_write", "写出后 probe models", "bool"],
     ["cpa_probe_chat", "写出后 probe chat", "bool"],
     ["cpa_pool_auto_scan", "CPA 号池自动巡检", "bool"],
-    ["cpa_pool_scan_interval_sec", "号池巡检周期秒", "number"],
+    ["cpa_pool_scan_interval_sec", "号池巡检周期秒(86400=24h)", "number"],
     ["cpa_pool_scan_workers", "号池巡检并发", "number"],
     ["cpa_pool_probe_timeout_sec", "号池 probe 超时秒", "number"],
     ["cpa_pool_probe_chat", "号池默认 probe chat", "bool"],
@@ -190,6 +190,11 @@ const CONFIG_FIELDS = {
     ["cpa_pool_probe_proxy", "号池 probe 代理(direct/pool)", "proxy"],
     ["cpa_pool_history_limit", "每号巡检历史条数", "number"],
     ["cpa_pool_apply_policy", "号池自动治理", "bool"],
+    ["cpa_pool_auto_refill", "号池自动补 CPA", "bool"],
+    ["cpa_pool_refill_target_active", "补 CPA 目标存量(0保持巡检前)", "number"],
+    ["cpa_pool_refill_max_per_scan", "单轮最多自动补 CPA", "number"],
+    ["cpa_pool_refill_workers", "自动补 CPA workers", "number"],
+    ["cpa_pool_refill_probe_chat", "自动补 CPA probe chat", "bool"],
     ["cpa_pool_quarantine_dir", "号池隔离区目录", "text"],
     ["cpa_pool_move_with_backup", "隔离写 meta 记录", "bool"],
     ["cpa_pool_hard_bad_threshold", "硬坏阈值", "number"],
@@ -277,6 +282,7 @@ function fmtElapsed(startedIso) {
 
 function setView(view) {
   state.view = view;
+  closePageSettings();
   if (location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
   $$(".nav-item[data-view]").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => {
@@ -292,7 +298,8 @@ function setView(view) {
 function openJobs(open = true) {
   $("#job-drawer").classList.toggle("open", open);
   $("#job-drawer").setAttribute("aria-hidden", open ? "false" : "true");
-  $("#drawer-backdrop").hidden = !open;
+  const settingsOpen = Boolean($("#page-settings-drawer")?.classList.contains("open"));
+  $("#drawer-backdrop").hidden = !(open || settingsOpen);
   if (open) loadJobs().catch((e) => toast(e.message, true));
 }
 
@@ -606,6 +613,8 @@ function renderCpaPoolStatus() {
   const s = data.summary || {};
   const counts = s.counts || {};
   const progress = data.progress || {};
+  const settings = data.settings || {};
+  const refill = s.refill || {};
   const running = Boolean(data.running);
   const total = Number(data.cpa_total ?? s.total ?? 0);
   const done = Number(progress.done ?? s.done ?? 0);
@@ -623,16 +632,28 @@ function renderCpaPoolStatus() {
   $("#cpa-pool-refreshed").textContent = s.refreshed || 0;
   $("#cpa-pool-results").textContent = data.results_total || 0;
   $("#cpa-pool-quarantine").textContent = data.quarantine_total || 0;
+  $("#cpa-pool-refill").textContent = refill.enabled
+    ? (refill.started ? `+${refill.limit || refill.need || 0}` : (refill.need ? `待${refill.need}` : "ON"))
+    : (settings.auto_refill ? "ON" : "OFF");
   $("#cpa-pool-progress").style.width = `${pct}%`;
   const next = data.next_scan_in_sec != null ? `${data.next_scan_in_sec}s` : "-";
   const elapsed = s.elapsed_sec != null ? ` · 耗时 ${s.elapsed_sec}s` : "";
   const actions = s.actions ? Object.entries(s.actions).map(([k, v]) => `${k}:${v}`).join(" ") : "";
+  const refillSkip = refill.error ? `skip ${refill.error}` : `need=${refill.need || 0}`;
+  const refillMeta = refill.enabled
+    ? (refill.started
+      ? ` · 补号 <code>started need=${esc(refill.need || 0)} limit=${esc(refill.limit || 0)} excluded=${esc(refill.excluded || 0)}</code>`
+      : ` · 补号 <code>${esc(refillSkip)}</code>`)
+    : "";
   $("#cpa-pool-meta").innerHTML =
     `进度 <b>${done}/${scanTotal || total}</b>${elapsed} · 下次自动检查 ${esc(next)} · ` +
-    `周期 <code>${esc((data.settings || {}).scan_interval_sec || 300)}s</code> · ` +
-    `proxy <code>${esc((data.settings || {}).probe_proxy || "-")}</code> · ` +
-    `治理 <code>${(data.settings || {}).apply_policy ? "ON" : "OFF"}</code>` +
-    (actions ? ` · 动作 <code>${esc(actions)}</code>` : "");
+    `周期 <code>${esc(settings.scan_interval_sec || 300)}s</code> · ` +
+    `proxy <code>${esc(settings.probe_proxy || "-")}</code> · ` +
+    `自动巡检 <code>${settings.auto_scan ? "ON" : "OFF"}</code> · ` +
+    `治理 <code>${settings.apply_policy ? "ON" : "OFF"}</code> · ` +
+    `自动补号 <code>${settings.auto_refill ? "ON" : "OFF"}</code>` +
+    (actions ? ` · 动作 <code>${esc(actions)}</code>` : "") +
+    refillMeta;
 
   const logs = data.logs || [];
   const logEl = $("#cpa-pool-log");
@@ -653,6 +674,11 @@ function renderCpaPoolStatus() {
       $("#cpa-pool-refresh-before").checked = data.settings.refresh_before_probe !== false;
       $("#cpa-pool-probe-chat").checked = Boolean(data.settings.probe_chat);
       $("#cpa-pool-apply-policy").checked = Boolean(data.settings.apply_policy);
+      $("#cpa-pool-auto-refill").checked = Boolean(data.settings.auto_refill);
+      $("#cpa-pool-refill-target").value = data.settings.refill_target_active || 0;
+      $("#cpa-pool-refill-max").value = data.settings.refill_max_per_scan || 30;
+      $("#cpa-pool-refill-workers").value = data.settings.refill_workers ?? -1;
+      $("#cpa-pool-refill-probe-chat").checked = Boolean(data.settings.refill_probe_chat);
       $("#cpa-pool-workers").dataset.seeded = "1";
     }
   }
@@ -973,14 +999,178 @@ function fieldInput(key, label, type, value, isSet) {
   return `<label><span>${esc(label)}</span><input data-config-key="${esc(key)}" type="${inputType}" value="${esc(value ?? "")}" placeholder="${ph}"></label>`;
 }
 
+/* ── 页面级配置（拆分自配置中心，就近维护） ── */
+
+const FIELD_MAP = {};
+[...(CONFIG_FIELDS.basic || []), ...(CONFIG_FIELDS.cpa || [])].forEach(([k, l, t]) => {
+  FIELD_MAP[k] = [k, l, t];
+});
+// 配置中心未暴露但注册流程常用的键
+const EXTRA_FIELDS = [
+  ["thread_start_interval", "线程启动间隔秒", "number"],
+  ["register_max_attempts", "单账号最大尝试", "number"],
+  ["account_hard_timeout", "单账号硬超时秒", "number"],
+  ["mail_timeout", "收码超时秒", "number"],
+  ["mail_poll_interval", "收码轮询间隔秒", "number"],
+  ["mail_retry_count", "收码换邮箱重试次数", "number"],
+  ["user_agent", "浏览器 User-Agent", "text"],
+  ["hotmail_alias_mode", "Hotmail 别名模式", "text"],
+  ["hotmail_alias_random_length", "别名随机后缀长度", "number"],
+  ["hotmail_poll_interval", "Hotmail 轮询间隔秒", "number"],
+  ["hotmail_recent_seconds", "Hotmail 邮件时间窗秒", "number"],
+  ["cloudflare_api_key", "Cloudflare API Key", "password"],
+  ["cloudflare_auth_mode", "Cloudflare 认证方式", "text"],
+  ["yyds_api_key", "YYDS API Key", "password"],
+  ["yyds_jwt", "YYDS JWT", "password"],
+  ["enable_nsfw", "注册开启 NSFW", "bool"],
+  ["grok2api_auto_add_local", "推本地 grok2api", "bool"],
+  ["grok2api_local_token_file", "本地 grok2api token 文件", "text"],
+  ["cpa_force_standalone", "Mint 强制独立浏览器", "bool"],
+  ["cpa_protocol_poll_timeout_sec", "协议轮询超时秒", "number"],
+  ["cpa_mint_cookie_inject", "Mint 注入注册 cookie", "bool"],
+  ["cpa_gui_close_mint_browser", "Mint 后关闭浏览器", "bool"],
+  ["cpa_mint_browser_reuse", "Mint 浏览器复用", "bool"],
+  ["cpa_mint_browser_recycle_every", "Mint 浏览器回收周期", "number"],
+];
+EXTRA_FIELDS.forEach(([k, l, t]) => { if (!FIELD_MAP[k]) FIELD_MAP[k] = [k, l, t]; });
+
+const PAGE_SETTINGS = {
+  console: {
+    title: "注册流程配置",
+    eyebrow: "CONSOLE CONFIG",
+    groups: [
+      ["注册行为", ["register_headless", "register_threads", "thread_start_interval", "register_max_attempts", "account_hard_timeout", "mail_timeout", "mail_poll_interval", "mail_retry_count", "enable_nsfw", "user_agent"]],
+      ["纯协议注册 / Turnstile Solver", ["protocol_register", "protocol_only", "protocol_register_fallback_browser", "turnstile_solver_provider", "protocol_solver_url", "protocol_solver_pass_proxy", "protocol_solver_locale", "protocol_solver_accept_language", "protocol_solver_timezone", "protocol_impersonate", "protocol_register_max_attempts", "protocol_solver_poll_timeout", "protocol_solver_poll_interval", "turnstile_site_key", "yescaptcha_key", "twocaptcha_enabled", "twocaptcha_key", "twocaptcha_pass_proxy", "twocaptcha_timeout", "twocaptcha_poll_interval", "twocaptcha_api_base", "protocol_email_tempmail_fallback"]],
+      ["grok2api 推送", ["grok2api_auto_add_local", "grok2api_local_token_file", "grok2api_auto_add_remote", "grok2api_remote_base", "grok2api_remote_app_key", "grok2api_pool_name"]],
+    ],
+  },
+  mail: {
+    title: "邮箱与收码配置",
+    eyebrow: "MAIL CONFIG",
+    groups: [
+      ["服务商", ["email_provider", "defaultDomains"]],
+      ["Hotmail / Outlook", ["hotmail_accounts_file", "hotmail_protocol", "hotmail_max_aliases_per_account", "hotmail_alias_mode", "hotmail_alias_random_length", "hotmail_poll_interval", "hotmail_recent_seconds"]],
+      ["CloudMail", ["cloudmail_url", "cloudmail_admin_email", "cloudmail_password"]],
+      ["其他服务商", ["cloudflare_api_base", "cloudflare_api_key", "cloudflare_admin_password", "cloudflare_auth_mode", "duckmail_api_key", "mailnest_api_key", "mailnest_project_code", "yyds_api_key", "yyds_jwt"]],
+    ],
+  },
+  proxies: {
+    title: "代理配置",
+    eyebrow: "PROXY CONFIG",
+    groups: [
+      ["全局代理", ["proxy", "cpa_proxy"]],
+      ["透传与其他", ["cpa_pool_probe_proxy", "protocol_solver_pass_proxy", "twocaptcha_pass_proxy", "browser_timezone"]],
+    ],
+  },
+  cpa: {
+    title: "CPA / Mint 配置",
+    eyebrow: "CPA CONFIG",
+    groups: [
+      ["CPA 导出", ["cpa_export_enabled", "cpa_prefer_protocol", "cpa_protocol_flow", "cpa_protocol_only", "cpa_allow_device_flow_fallback", "cpa_auth_dir", "cpa_copy_to_hotload", "cpa_hotload_dir", "cpa_base_url"]],
+      ["Mint 执行", ["cpa_headless", "cpa_force_standalone", "cpa_mint_workers", "cpa_mint_queue_max", "cpa_mint_timeout_sec", "cpa_mint_cookie_inject", "cpa_gui_close_mint_browser", "cpa_mint_browser_reuse", "cpa_mint_browser_recycle_every", "cpa_probe_after_write", "cpa_probe_chat", "cpa_protocol_poll_timeout_sec"]],
+      ["号池巡检", ["cpa_pool_auto_scan", "cpa_pool_scan_interval_sec", "cpa_pool_scan_workers", "cpa_pool_probe_timeout_sec", "cpa_pool_probe_chat", "cpa_pool_refresh_before_probe", "cpa_pool_refresh_skew_sec", "cpa_pool_max_items_per_scan", "cpa_pool_probe_proxy", "cpa_pool_history_limit"]],
+      ["号池治理与补号", ["cpa_pool_apply_policy", "cpa_pool_auto_refill", "cpa_pool_refill_target_active", "cpa_pool_refill_max_per_scan", "cpa_pool_refill_workers", "cpa_pool_refill_probe_chat", "cpa_pool_quarantine_dir", "cpa_pool_move_with_backup", "cpa_pool_hard_bad_threshold", "cpa_pool_refresh_failed_threshold", "cpa_pool_invalid_threshold", "cpa_pool_no_grok45_threshold", "cpa_pool_soft_fail_threshold", "cpa_pool_quota_threshold", "cpa_pool_quota_cooldown_sec", "cpa_pool_hard_bad_action", "cpa_pool_refresh_failed_action", "cpa_pool_invalid_action", "cpa_pool_no_grok45_action", "cpa_pool_soft_fail_action", "cpa_pool_quota_action"]],
+    ],
+  },
+};
+
+let pageSettingsKey = null;
+
+function renderCfgGroup(title, keys, cfg, anchorId = "") {
+  const fields = keys
+    .filter((k) => FIELD_MAP[k])
+    .map((k) => {
+      const [key, label, type] = FIELD_MAP[k];
+      return fieldInput(key, label, type, cfg[key], cfg[`${key}__set`]);
+    })
+    .join("");
+  if (!fields) return "";
+  return `<div class="cfg-group" ${anchorId ? `id="${anchorId}"` : ""}><h3>${esc(title)}</h3><div class="cfg-group-grid">${fields}</div></div>`;
+}
+
+function renderPageSettings() {
+  const def = pageSettingsKey && PAGE_SETTINGS[pageSettingsKey];
+  if (!def) return;
+  const cfg = state.config || {};
+  $("#page-settings-title").textContent = def.title;
+  $("#page-settings-eyebrow").textContent = def.eyebrow;
+  $("#page-settings-body").innerHTML = def.groups
+    .map(([groupTitle, keys]) => renderCfgGroup(groupTitle, keys, cfg))
+    .join("");
+}
+
+async function openPageSettings(key) {
+  pageSettingsKey = key;
+  try {
+    if (!state.config) await loadConfig();
+    else if (!state.proxies.length) await loadProxies().catch(() => {});
+  } catch (err) {
+    toast(err.message, true);
+  }
+  renderPageSettings();
+  $("#page-settings-drawer").classList.add("open");
+  $("#page-settings-drawer").setAttribute("aria-hidden", "false");
+  $("#drawer-backdrop").hidden = false;
+}
+
+function closePageSettings() {
+  pageSettingsKey = null;
+  $("#page-settings-drawer").classList.remove("open");
+  $("#page-settings-drawer").setAttribute("aria-hidden", "true");
+  $("#page-settings-body").innerHTML = "";
+  const jobsOpen = Boolean($("#job-drawer")?.classList.contains("open"));
+  $("#drawer-backdrop").hidden = !jobsOpen;
+}
+
+function collectConfigScoped(root) {
+  const payload = {};
+  root.querySelectorAll("[data-config-key]").forEach((input) => {
+    const key = input.dataset.configKey;
+    if (input.dataset.proxyField) {
+      if (input.value === "__custom__") {
+        const custom = root.querySelector(`[data-proxy-custom="${key}"]`);
+        payload[key] = (custom ? custom.value : "").trim();
+      } else {
+        payload[key] = input.value;
+      }
+    } else if (input.type === "checkbox") {
+      payload[key] = input.checked;
+    } else if (input.type === "number") {
+      payload[key] = input.value === "" ? null : Number(input.value);
+    } else {
+      payload[key] = input.value;
+    }
+  });
+  return payload;
+}
+
 function renderConfigForm() {
   const cfg = state.config || {};
-  $("#settings-basic").innerHTML = CONFIG_FIELDS.basic
-    .map(([key, label, type]) => fieldInput(key, label, type, cfg[key], cfg[`${key}__set`]))
-    .join("");
-  $("#settings-cpa").innerHTML = CONFIG_FIELDS.cpa
-    .map(([key, label, type]) => fieldInput(key, label, type, cfg[key], cfg[`${key}__set`]))
-    .join("");
+  const allEl = $("#settings-all");
+  const anchorsEl = $("#cfg-anchors");
+  if (allEl) {
+    const seen = new Set();
+    const sections = [];
+    const anchors = [];
+    for (const [pageKey, def] of Object.entries(PAGE_SETTINGS)) {
+      def.groups.forEach(([groupTitle, keys], idx) => {
+        const fields = keys
+          .filter((k) => FIELD_MAP[k] && !seen.has(k))
+          .map((k) => {
+            seen.add(k);
+            const [key, label, type] = FIELD_MAP[k];
+            return fieldInput(key, label, type, cfg[key], cfg[`${key}__set`]);
+          })
+          .join("");
+        if (!fields) return;
+        const id = `cfg-${pageKey}-${idx}`;
+        anchors.push(`<a href="#${esc(id)}">${esc(def.title.replace("配置", ""))} · ${esc(groupTitle)}</a>`);
+        sections.push(`<section class="cfg-section" id="${esc(id)}"><h3>${esc(def.title)} / ${esc(groupTitle)}</h3><div class="settings-grid">${fields}</div></section>`);
+      });
+    }
+    allEl.innerHTML = sections.join("");
+    if (anchorsEl) anchorsEl.innerHTML = anchors.join("");
+  }
   const raw = { ...(cfg._all || {}) };
   for (const key of Object.keys(raw)) {
     if (key.endsWith("__set")) delete raw[key];
@@ -1317,9 +1507,48 @@ function bindEvents() {
   });
   $("#open-jobs").addEventListener("click", () => openJobs(true));
   $("#close-jobs").addEventListener("click", () => openJobs(false));
-  $("#drawer-backdrop").addEventListener("click", () => openJobs(false));
+  $("#drawer-backdrop").addEventListener("click", () => {
+    openJobs(false);
+    closePageSettings();
+  });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && $("#job-drawer").classList.contains("open")) openJobs(false);
+    if (e.key !== "Escape") return;
+    if ($("#page-settings-drawer").classList.contains("open")) closePageSettings();
+    else if ($("#job-drawer").classList.contains("open")) openJobs(false);
+  });
+
+  /* 页面设置抽屉 */
+  $$("[data-page-settings]").forEach((btn) => {
+    btn.addEventListener("click", () => openPageSettings(btn.dataset.pageSettings));
+  });
+  $$("[data-goto-settings]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.gotoSettings;
+      setView(key === "console" ? "console" : key);
+      openPageSettings(key);
+    });
+  });
+  $("#close-page-settings").addEventListener("click", closePageSettings);
+  $("#page-settings-reload").addEventListener("click", async () => {
+    try {
+      state.config = await api("/api/config");
+      renderPageSettings();
+      toast("已重新加载配置");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+  $("#page-settings-save").addEventListener("click", async () => {
+    try {
+      const payload = collectConfigScoped($("#page-settings-body"));
+      state.config = await api("/api/config", { method: "PUT", body: JSON.stringify(payload) });
+      renderPageSettings();
+      toast("页面配置已保存");
+      state.overview = await api("/api/overview");
+      renderOverview();
+    } catch (err) {
+      toast(err.message, true);
+    }
   });
   // 配置中心代理选择器：选「自定义…」时展开文本框
   document.addEventListener("change", (e) => {
@@ -1421,6 +1650,11 @@ function bindEvents() {
       refresh_before_probe: $("#cpa-pool-refresh-before").checked,
       probe_chat: $("#cpa-pool-probe-chat").checked,
       apply_policy: $("#cpa-pool-apply-policy").checked,
+      auto_refill: $("#cpa-pool-auto-refill").checked,
+      refill_target_active: Number($("#cpa-pool-refill-target").value || 0),
+      refill_max_per_scan: Number($("#cpa-pool-refill-max").value || 30),
+      refill_workers: Number($("#cpa-pool-refill-workers").value || -1),
+      refill_probe_chat: $("#cpa-pool-refill-probe-chat").checked,
     };
     try {
       const result = await api("/api/cpa/pool/scan", { method: "POST", body: JSON.stringify(body) });
@@ -1742,7 +1976,15 @@ function bindEvents() {
   $("#reload-config").addEventListener("click", () => loadConfig().catch((e) => toast(e.message, true)));
   $("#save-config").addEventListener("click", async () => {
     try {
-      const payload = collectConfigFromForm();
+      // 表单字段（分组内联编辑）优先，原始 JSON 作为底合并
+      const payload = collectConfigScoped($('[data-view-panel="settings"]'));
+      let raw;
+      try {
+        raw = JSON.parse($("#config-raw").value || "{}");
+      } catch (err) {
+        throw new Error(`原始 JSON 无效: ${err.message}`);
+      }
+      payload._raw = { ...raw, ...payload };
       state.config = await api("/api/config", { method: "PUT", body: JSON.stringify(payload) });
       renderConfigForm();
       toast("配置已保存");

@@ -101,8 +101,12 @@
           <div class="topbar-title">
             <p class="eyebrow">REGISTER PIPELINE</p>
             <h1>注册控制台</h1>
+            <p class="topbar-sub">批量注册 Grok 账号并自动 mint CPA，监控实时进度与日志</p>
           </div>
           <div class="top-actions">
+            <button class="btn ghost" data-page-settings="console" type="button" title="注册相关配置">
+              <svg><use href="#i-settings"/></svg>页面设置
+            </button>
             <button class="btn ghost" id="refresh-overview" type="button">
               <svg><use href="#i-refresh"/></svg>刷新
             </button>
@@ -306,6 +310,7 @@
           <div class="topbar-title">
             <p class="eyebrow">LEDGER</p>
             <h1>账号账本</h1>
+            <p class="topbar-sub">已注册账号台账，跟踪 SSO / CPA 就绪状态，支持批量补 CPA 与导出</p>
           </div>
           <div class="top-actions">
             <button class="btn ghost" id="export-accounts" type="button">
@@ -393,8 +398,12 @@
           <div class="topbar-title">
             <p class="eyebrow">OIDC / PKCE MINT</p>
             <h1>CPA 文件</h1>
+            <p class="topbar-sub">xai-*.json 认证文件管理、号池巡检治理与隔离区恢复</p>
           </div>
           <div class="top-actions">
+            <button class="btn ghost" data-page-settings="cpa" type="button" title="CPA / Mint 配置">
+              <svg><use href="#i-settings"/></svg>页面设置
+            </button>
             <label class="top-inline">补CPA并发
               <input id="cpa-backfill-workers" type="number" min="-1" max="20" value="4" title="-1=使用 cpa_mint_workers(最高8)/自动；建议 4-8">
             </label>
@@ -425,6 +434,7 @@
               <div class="pool-kpi accent"><span>本轮续期</span><b id="cpa-pool-refreshed">0</b></div>
               <div class="pool-kpi"><span>已巡检</span><b id="cpa-pool-results">0</b></div>
               <div class="pool-kpi warn"><span>隔离区</span><b id="cpa-pool-quarantine">0</b></div>
+              <div class="pool-kpi accent"><span>自动补号</span><b id="cpa-pool-refill">OFF</b></div>
             </div>
             <div class="pool-actions">
               <label class="top-inline">并发
@@ -444,6 +454,23 @@
               <label class="top-inline check">
                 <input id="cpa-pool-apply-policy" type="checkbox">
                 自动治理
+              </label>
+              <label class="top-inline check">
+                <input id="cpa-pool-auto-refill" type="checkbox">
+                自动补CPA
+              </label>
+              <label class="top-inline">补号目标
+                <input id="cpa-pool-refill-target" type="number" min="0" max="100000" value="0" title="0=保持本轮巡检前活跃 CPA 文件数">
+              </label>
+              <label class="top-inline">单轮补号
+                <input id="cpa-pool-refill-max" type="number" min="1" max="10000" value="30">
+              </label>
+              <label class="top-inline">补号并发
+                <input id="cpa-pool-refill-workers" type="number" min="-1" max="20" value="-1" title="-1=使用 cpa_mint_workers/自动">
+              </label>
+              <label class="top-inline check">
+                <input id="cpa-pool-refill-probe-chat" type="checkbox">
+                补号 probe chat
               </label>
               <button class="btn primary" id="cpa-pool-scan" type="button">
                 <svg><use href="#i-play"/></svg>立即巡检
@@ -573,8 +600,12 @@
           <div class="topbar-title">
             <p class="eyebrow">HOTMAIL / OUTLOOK</p>
             <h1>邮箱凭证</h1>
+            <p class="topbar-sub">接码邮箱池管理，跟踪每条凭证的别名消耗与可用状态</p>
           </div>
           <div class="top-actions">
+            <button class="btn ghost" data-page-settings="mail" type="button" title="邮箱服务商与收码配置">
+              <svg><use href="#i-settings"/></svg>页面设置
+            </button>
             <button class="btn ghost" id="refresh-mail" type="button">
               <svg><use href="#i-refresh"/></svg>刷新
             </button>
@@ -651,8 +682,12 @@
           <div class="topbar-title">
             <p class="eyebrow">PROXY POOL</p>
             <h1>代理池</h1>
+            <p class="topbar-sub">代理导入、协议探测与健康检测，注册/CPA 可按任务选用</p>
           </div>
           <div class="top-actions">
+            <button class="btn ghost" data-page-settings="proxies" type="button" title="全局代理配置">
+              <svg><use href="#i-settings"/></svg>页面设置
+            </button>
             <button class="btn ghost" id="check-all-proxies" type="button">
               <svg><use href="#i-zap"/></svg>检测全部
             </button>
@@ -808,6 +843,7 @@
           <div class="topbar-title">
             <p class="eyebrow">CONFIG.JSON</p>
             <h1>配置中心</h1>
+            <p class="topbar-sub">全部配置按功能分组内联展示与编辑；各页面顶栏的「页面设置」提供同组配置的快捷入口</p>
           </div>
           <div class="top-actions">
             <button class="btn ghost" id="reload-config" type="button">
@@ -819,26 +855,42 @@
           </div>
         </header>
 
-        <div class="settings-grid-2col">
-          <div class="panel">
-            <div class="panel-head"><h2><svg><use href="#i-mail"/></svg>邮箱与网络</h2></div>
-            <div class="panel-body"><div class="settings-grid" id="settings-basic"></div></div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2><svg><use href="#i-settings"/></svg>全部配置</h2>
+            <span class="hint">按功能分组展示，与本页「保存配置」一并提交</span>
           </div>
-          <div class="panel">
-            <div class="panel-head"><h2><svg><use href="#i-zap"/></svg>注册与 CPA</h2></div>
-            <div class="panel-body"><div class="settings-grid" id="settings-cpa"></div></div>
-          </div>
+          <div class="cfg-anchors" id="cfg-anchors"></div>
+          <div class="panel-body settings-all" id="settings-all"></div>
         </div>
         <div class="panel">
-          <div class="panel-head"><h2><svg><use href="#i-settings"/></svg>原始 JSON（高级）</h2></div>
+          <div class="panel-head"><h2><svg><use href="#i-file"/></svg>原始 JSON（高级）</h2></div>
           <div class="panel-body">
-            <p class="hint" style="margin-bottom:10px">可直接编辑完整配置；密钥留空表示保留原值，保存时表单字段优先覆盖。</p>
+            <p class="hint" style="margin-bottom:10px">直接编辑完整 config.json；密钥留空表示保留原值。保存时上方表单字段优先于此处同名字段。</p>
             <textarea id="config-raw" class="code" spellcheck="false"></textarea>
           </div>
         </div>
       </section>
     </main>
   </div>
+
+  <!-- Page settings drawer -->
+  <aside class="drawer" id="page-settings-drawer" aria-hidden="true">
+    <header class="drawer-head">
+      <div>
+        <p class="eyebrow" id="page-settings-eyebrow">PAGE CONFIG</p>
+        <h2 id="page-settings-title">页面设置</h2>
+      </div>
+      <button class="icon-btn" id="close-page-settings" type="button" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+    </header>
+    <div class="drawer-body drawer-form" id="page-settings-body"></div>
+    <footer class="drawer-foot">
+      <button class="btn ghost" id="page-settings-reload" type="button">重新加载</button>
+      <button class="btn primary" id="page-settings-save" type="button">
+        <svg><use href="#i-check"/></svg>保存
+      </button>
+    </footer>
+  </aside>
 
   <!-- Jobs drawer -->
   <aside class="drawer" id="job-drawer" aria-hidden="true">

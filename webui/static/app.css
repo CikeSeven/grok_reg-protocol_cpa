@@ -221,6 +221,7 @@ h1 {
 h2 { margin: 0; font-size: 14.5px; font-weight: 650; }
 
 .top-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.topbar-sub { margin: 6px 0 0; font-size: 12.5px; color: var(--faint); }
 
 /* ═══ Buttons ═══ */
 .btn {
@@ -361,7 +362,7 @@ h2 { margin: 0; font-size: 14.5px; font-weight: 650; }
 .pool-panel .panel-body { display: grid; gap: 14px; }
 .pool-kpis {
   display: grid;
-  grid-template-columns: repeat(7, minmax(105px, 1fr));
+  grid-template-columns: repeat(8, minmax(105px, 1fr));
   gap: 10px;
 }
 .pool-kpi {
@@ -835,6 +836,31 @@ td .mono { color: var(--muted); font-size: 11.5px; }
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .settings-grid label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
 .settings-grid .switch-row { margin-top: 2px; }
+.settings-all { display: grid; gap: 14px; }
+.cfg-anchors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px 0;
+}
+.cfg-anchors a {
+  min-height: 26px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.cfg-anchors a:hover { color: var(--view, var(--violet)); border-color: var(--view, var(--violet)); }
+.cfg-section {
+  scroll-margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.7);
+}
+.cfg-section h3 { margin: 0 0 12px; font-size: 13px; color: var(--text); }
 textarea.code {
   width: 100%;
   min-height: 200px;
@@ -875,6 +901,63 @@ textarea.code:focus { outline: none; border-color: var(--violet); box-shadow: 0 
 }
 .drawer-head .eyebrow { color: var(--violet); }
 .drawer-body { flex: 1; overflow-y: auto; padding: 12px 16px 20px; display: grid; gap: 10px; align-content: start; }
+
+/* 页面设置抽屉表单 */
+.drawer-foot {
+  display: flex; justify-content: flex-end; gap: 9px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+.drawer-form { gap: 16px; padding-top: 16px; }
+.cfg-group h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--violet);
+  display: flex; align-items: center; gap: 8px;
+}
+.cfg-group h3::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(124, 92, 240, 0.25), transparent); }
+.cfg-group-grid { display: grid; gap: 10px; }
+.cfg-group-grid label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.cfg-group-grid input[type="text"],
+.cfg-group-grid input[type="number"],
+.cfg-group-grid input[type="password"],
+.cfg-group-grid .select {
+  width: 100%; height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.cfg-group-grid input:focus, .cfg-group-grid .select:focus {
+  border-color: var(--violet);
+  box-shadow: 0 0 0 3px rgba(124, 92, 240, 0.13);
+  outline: none;
+}
+
+/* 配置中心入口卡 */
+.config-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.config-link {
+  display: flex; align-items: center; gap: 13px;
+  padding: 15px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  text-align: left;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+.config-link:hover { border-color: rgba(124, 92, 240, 0.4); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.config-link > svg:first-child { width: 20px; height: 20px; color: var(--violet); flex: 0 0 20px; }
+.config-link > div { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.config-link strong { font-size: 13.5px; }
+.config-link span { font-size: 11.5px; color: var(--faint); }
+.config-link .go { width: 15px; height: 15px; color: var(--faint); }
+.config-link:hover .go { color: var(--violet); }
+@media (max-width: 900px) { .config-links { grid-template-columns: 1fr; } }
 
 .job-card {
   padding: 14px 16px;

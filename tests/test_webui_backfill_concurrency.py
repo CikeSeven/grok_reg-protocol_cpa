@@ -79,6 +79,38 @@ class WebuiBackfillConcurrencyTests(unittest.TestCase):
         self.assertEqual(job.stats["done"], 6)
         self.assertGreaterEqual(max_active, 2)
 
+    def test_run_backfill_skips_excluded_emails_without_explicit_selection(self):
+        runner = jobs.JobRunner()
+        job = jobs.Job(
+            id="bf-exclude-test",
+            kind="backfill",
+            options={"emails": [], "exclude_emails": ["u0@example.com"], "workers": 1, "probe": False, "probe_chat": False, "sleep": 0},
+        )
+        seen: list[str] = []
+
+        def fake_mint_and_export(**kwargs):
+            seen.append(kwargs["email"])
+            out = Path(kwargs["auth_dir"]) / f"xai-{kwargs['email']}.json"
+            out.write_text("{}", encoding="utf-8")
+            return {"ok": True, "path": str(out)}
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td) / "cpa_auths"
+            with mock.patch("webui.store.load_config_raw", return_value={"cpa_mint_workers": 1, "cpa_copy_to_hotload": False}):
+                with mock.patch("webui.store.accounts_file", return_value=Path("accounts_cli.txt")):
+                    with mock.patch("webui.store.cpa_dir", return_value=out_dir):
+                        with mock.patch("webui.store.hotload_dir", return_value=None):
+                            with mock.patch("cpa_xai.parse_accounts_file", return_value=[FakeAccount(f"u{i}@example.com") for i in range(3)]):
+                                with mock.patch("cpa_xai.existing_cpa_emails", return_value=set()):
+                                    with mock.patch("cpa_xai.mint_and_export", side_effect=fake_mint_and_export):
+                                        runner._run_backfill(job)
+
+        self.assertEqual(job.status, "completed")
+        self.assertNotIn("u0@example.com", seen)
+        self.assertEqual(seen, ["u1@example.com", "u2@example.com"])
+
 
 if __name__ == "__main__":
     unittest.main()
