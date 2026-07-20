@@ -5,10 +5,30 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from unittest import mock
 
 from webui import cpa_pool
+
+
+class _InlineExecutor:
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def submit(self, function, *args, **kwargs):
+        future = Future()
+        try:
+            future.set_result(function(*args, **kwargs))
+        except Exception as exc:  # noqa: BLE001
+            future.set_exception(exc)
+        return future
 
 
 class WebuiCpaPoolRecoveryTests(unittest.TestCase):
@@ -241,13 +261,21 @@ class WebuiCpaPoolRecoveryTests(unittest.TestCase):
             mock.patch.object(monitor, "_scan_one", side_effect=scan_one),
             mock.patch.object(monitor, "_maybe_start_refill", return_value={"enabled": False, "started": False}),
             mock.patch.object(monitor, "quarantine_summary", return_value={"total": 0}),
+            mock.patch("webui.cpa_pool.ThreadPoolExecutor", _InlineExecutor),
         ):
             monitor.ensure_scheduler()
             self.assertIsNotNone(monitor._scan_thread)
             monitor._scan_thread.join(timeout=5)
 
         self.assertFalse(monitor._scan_thread.is_alive())
-        self.assertEqual(checked, [("pending@example.com", True)])
+        self.assertEqual(
+            checked,
+            [("pending@example.com", True)],
+            msg=(
+                f"last_error={monitor._last_error!r} progress={monitor._progress!r} "
+                f"active={monitor._active_scan!r} logs={list(monitor._logs)[-10:]!r}"
+            ),
+        )
         self.assertEqual(monitor._scan_id, "persisted1")
         self.assertEqual(monitor._resume_count, 1)
         self.assertEqual(monitor._progress["done"], 2)

@@ -226,7 +226,7 @@
   "cpa_pool_scan_history_limit": 100,
   "// cpa_pool_apply_policy": "true=巡检后按下面策略自动治理；默认 false，建议先只读巡检观察分布",
   "cpa_pool_apply_policy": false,
-  "// cpa_pool_auto_refill": "true=治理移动/隔离导致活跃 CPA 数低于目标时，自动启动 WebUI 补 CPA 任务；默认 false",
+  "// cpa_pool_auto_refill": "true=活跃 CPA 低于目标时自动补号；优先补存量账号缺失的 CPA，候选不足时自动注册新账号；默认 false",
   "cpa_pool_auto_refill": false,
   "// cpa_pool_refill_target_active": "自动补 CPA 的目标活跃文件数；0=保持本轮巡检前活跃数量",
   "cpa_pool_refill_target_active": 0,

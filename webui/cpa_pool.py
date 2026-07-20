@@ -429,6 +429,10 @@ def _email_from_auth_path(path: Path) -> str:
     return name[len("xai-") : -len(".json")].lower() if name.startswith("xai-") and name.endswith(".json") else ""
 
 
+def _is_quarantine_auth_file(path: Path) -> bool:
+    return path.name.startswith("xai-") and path.name.endswith(".json") and not path.name.endswith(".meta.json")
+
+
 def _beijingize_record(row: dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
     for key in _PRESENTATION_TIME_KEYS:
@@ -826,6 +830,8 @@ class CpaPoolMonitor:
         total = 0
         if base.is_dir():
             for p in base.glob("**/xai-*.json"):
+                if not _is_quarantine_auth_file(p):
+                    continue
                 bucket = p.parent.name
                 counts[bucket] = counts.get(bucket, 0) + 1
                 total += 1
@@ -838,6 +844,8 @@ class CpaPoolMonitor:
         items: list[dict[str, Any]] = []
         if base.is_dir():
             for p in sorted(base.glob("**/xai-*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+                if not _is_quarantine_auth_file(p):
+                    continue
                 item_bucket = p.parent.name
                 if b and b != "all" and item_bucket.lower() != b:
                     continue
@@ -1253,13 +1261,32 @@ class CpaPoolMonitor:
             pass
         return {"ok": True, "total": len(results), "success": sum(1 for r in results if r.get("ok")), "items": results}
 
+    def _backfill_candidate_emails(self, *, active_emails: set[str], excluded_emails: set[str]) -> list[str]:
+        from cpa_xai import parse_accounts_file
+
+        cfg = store.load_config_raw()
+        accounts = parse_accounts_file(store.accounts_file(cfg))
+        return sorted(
+            {
+                account.email.strip().lower()
+                for account in accounts
+                if account.email.strip()
+                and account.email.strip().lower() not in active_emails
+                and account.email.strip().lower() not in excluded_emails
+                and (account.sso or account.password)
+            }
+        )
+
     def _maybe_start_refill(self, *, settings: dict[str, Any], initial_total: int, trigger: str) -> dict[str, Any]:
         if not bool(settings.get("auto_refill")):
             return {"enabled": False, "started": False}
         try:
-            current_total = len(store.list_cpa_index())
-        except Exception:
-            current_total = 0
+            active_index = store.list_cpa_index()
+        except Exception as exc:  # noqa: BLE001
+            err = f"active CPA index unavailable: {_mask_error(exc)}"
+            self._log(f"自动补号跳过：{err}")
+            return {"enabled": True, "started": False, "error": err}
+        current_total = len(active_index)
         target = int(settings.get("refill_target_active") or 0) or int(initial_total or 0)
         need = max(0, target - current_total)
         if need <= 0:
@@ -1278,18 +1305,62 @@ class CpaPoolMonitor:
                 exclude_emails = sorted({str(i.get("email") or "").lower() for i in q_items if str(i.get("email") or "").strip()})
             except Exception:
                 exclude_emails = []
-            job = runner.start_backfill(
-                {
-                    "limit": limit,
-                    "probe": True,
-                    "probe_chat": bool(settings.get("refill_probe_chat")),
-                    "workers": int(settings.get("refill_workers") or -1),
-                    "sleep": 0,
-                    "exclude_emails": exclude_emails,
-                }
+            candidates = self._backfill_candidate_emails(
+                active_emails={str(email).lower() for email in active_index},
+                excluded_emails=set(exclude_emails),
             )
-            self._log(f"自动补号已启动：need={need} limit={limit} exclude={len(exclude_emails)} job={job.get('id')} trigger={trigger}")
-            return {"enabled": True, "started": True, "target": target, "current": current_total, "need": need, "limit": limit, "excluded": len(exclude_emails), "job": job}
+            cfg = store.load_config_raw()
+            if len(candidates) >= limit:
+                strategy = "backfill"
+                job = runner.start_backfill(
+                    {
+                        "emails": candidates[:limit],
+                        "limit": limit,
+                        "probe": True,
+                        "probe_chat": bool(settings.get("refill_probe_chat")),
+                        "workers": int(settings.get("refill_workers") or -1),
+                        "sleep": 0,
+                        "exclude_emails": exclude_emails,
+                    }
+                )
+            else:
+                if not _coerce_bool(cfg.get("cpa_export_enabled"), True):
+                    raise RuntimeError("cpa_export_enabled=false; cannot register replacement CPA accounts")
+                strategy = "register"
+                register_threads = min(
+                    limit,
+                    _coerce_int(cfg.get("register_threads"), 1, min_v=1, max_v=100),
+                )
+                job = runner.start_register(
+                    {
+                        "extra": limit,
+                        "threads": register_threads,
+                        "mint_workers": _coerce_int(cfg.get("cpa_mint_workers"), -1, min_v=-1, max_v=100),
+                        "mint_queue_max": _coerce_int(cfg.get("cpa_mint_queue_max"), -1, min_v=-1),
+                        "headless": _coerce_bool(cfg.get("register_headless"), False),
+                        "fast": True,
+                        "protocol_register": _coerce_bool(cfg.get("protocol_register"), False),
+                        "protocol_no_browser_fallback": _coerce_bool(cfg.get("protocol_only"), False)
+                        or not _coerce_bool(cfg.get("protocol_register_fallback_browser"), True),
+                        "proxy_mode": "config",
+                    }
+                )
+            self._log(
+                f"自动补号已启动：strategy={strategy} need={need} limit={limit} "
+                f"candidates={len(candidates)} exclude={len(exclude_emails)} job={job.get('id')} trigger={trigger}"
+            )
+            return {
+                "enabled": True,
+                "started": True,
+                "strategy": strategy,
+                "target": target,
+                "current": current_total,
+                "need": need,
+                "limit": limit,
+                "candidates": len(candidates),
+                "excluded": len(exclude_emails),
+                "job": job,
+            }
         except Exception as exc:  # noqa: BLE001
             err = _mask_error(exc)
             self._log(f"自动补号启动失败：need={need} error={err}")

@@ -219,7 +219,7 @@ const CONFIG_FIELDS = {
     ["cpa_pool_history_limit", "每号巡检历史条数", "number"],
     ["cpa_pool_scan_history_limit", "整轮巡检历史条数", "number"],
     ["cpa_pool_apply_policy", "号池自动治理", "bool"],
-    ["cpa_pool_auto_refill", "号池自动补 CPA", "bool"],
+    ["cpa_pool_auto_refill", "号池自动补号（含注册）", "bool"],
     ["cpa_pool_refill_target_active", "补 CPA 目标存量(0保持巡检前)", "number"],
     ["cpa_pool_refill_max_per_scan", "单轮最多自动补 CPA", "number"],
     ["cpa_pool_refill_workers", "自动补 CPA workers", "number"],
@@ -677,7 +677,7 @@ function renderCpaPoolStatus() {
   const refillSkip = refill.error ? `skip ${refill.error}` : `need=${refill.need || 0}`;
   const refillMeta = refill.enabled
     ? (refill.started
-      ? ` · 补号 <code>started need=${esc(refill.need || 0)} limit=${esc(refill.limit || 0)} excluded=${esc(refill.excluded || 0)}</code>`
+      ? ` · 补号 <code>${esc(refill.strategy || "backfill")} need=${esc(refill.need || 0)} limit=${esc(refill.limit || 0)} candidates=${esc(refill.candidates || 0)} excluded=${esc(refill.excluded || 0)}</code>`
       : ` · 补号 <code>${esc(refillSkip)}</code>`)
     : "";
   const resumeMeta = Number(data.resume_count || s.resume_count || 0) > 0
@@ -757,7 +757,7 @@ function renderCpaScanHistory() {
     const counts = compactObj(row.counts);
     const refill = row.refill || {};
     const refillText = refill.enabled
-      ? (refill.started ? `补 ${refill.limit || refill.need || 0}` : (refill.need ? `待补 ${refill.need}` : "开启"))
+      ? (refill.started ? `${refill.strategy === "register" ? "注册" : "补 CPA"} ${refill.limit || refill.need || 0}` : (refill.need ? `待补 ${refill.need}` : "开启"))
       : "-";
     tr.innerHTML = `
       <td><span class="pill ${cpaScanOutcomePill(row.outcome)}">${esc(scanOutcomeText[row.outcome] || row.outcome || "-")}</span></td>
