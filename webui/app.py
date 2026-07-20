@@ -8,7 +8,6 @@ import mimetypes
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Str
 from starlette.background import BackgroundTask
 
 from . import store
+from . import timeutil
 from .cpa_pool import monitor as cpa_pool_monitor
 from .jobs import runner
 
@@ -24,7 +24,7 @@ STATIC_DIR = Path(__file__).with_name("static")
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return timeutil.now_iso()
 
 
 def create_app() -> FastAPI:
@@ -137,7 +137,7 @@ def create_app() -> FastAPI:
         body = await request.json()
         emails = body.get("emails") or []
         text = store.export_accounts(list(emails) if emails else None)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        ts = timeutil.now_compact()
         return PlainTextResponse(
             text,
             media_type="text/plain; charset=utf-8",

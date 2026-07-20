@@ -10,11 +10,11 @@ import traceback
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from . import store
+from . import timeutil
 
 
 MAX_REGISTER_THREADS = 100
@@ -24,7 +24,7 @@ DEFAULT_BACKFILL_WORKERS = 4
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return timeutil.now_iso()
 
 
 def apply_register_protocol_options(
@@ -139,7 +139,7 @@ class Job:
             return
         with self.log_lock:
             self.log_seq += 1
-            self.logs.append(f"[{time.strftime('%H:%M:%S')}] {line}")
+            self.logs.append(f"[{timeutil.now_clock()}] {line}")
 
     def public_dict(self, *, include_logs: bool = False, after: int = 0) -> dict[str, Any]:
         payload = {

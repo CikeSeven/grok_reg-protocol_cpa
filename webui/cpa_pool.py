@@ -15,7 +15,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ from cpa_xai.schema import (
 )
 
 from . import store
+from . import timeutil
 
 STATE_PATH = store.ROOT / "cpa_pool_state.json"
 DEFAULT_QUARANTINE_DIR = store.ROOT / "cpa_quarantine"
@@ -93,10 +94,21 @@ TERMINAL_STATUSES = {
 _POLICY_ACTIONS = {"keep", "disable", "quarantine", "delete"}
 _MANUAL_ACTIONS = {"disable", "enable", "quarantine", "delete"}
 _DIRECT_PROXY_VALUES = {"direct", "none", "no_proxy", "noproxy", "off"}
+_PRESENTATION_TIME_KEYS = {
+    "started_at",
+    "finished_at",
+    "checked_at",
+    "expired",
+    "last_ok_at",
+    "last_bad_at",
+    "first_seen_at",
+    "action_at",
+    "cool_until",
+}
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return timeutil.now_iso()
 
 
 def _iso_to_ts(value: str | None) -> float:
@@ -112,12 +124,7 @@ def _iso_to_ts(value: str | None) -> float:
 
 
 def _ts_to_iso(ts: float) -> str:
-    if not ts:
-        return ""
-    try:
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
-        return ""
+    return timeutil.timestamp_iso(ts)
 
 
 def _access_exp_ts(access_token: str) -> float:
@@ -373,7 +380,7 @@ def _unique_path(path: Path) -> Path:
     if not path.exists():
         return path
     stem, suffix = path.stem, path.suffix
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = timeutil.now_compact()
     for i in range(1, 1000):
         cand = path.with_name(f"{stem}-{ts}-{i}{suffix}")
         if not cand.exists():
@@ -417,6 +424,22 @@ def _email_from_auth_path(path: Path) -> str:
     return name[len("xai-") : -len(".json")].lower() if name.startswith("xai-") and name.endswith(".json") else ""
 
 
+def _beijingize_record(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    for key in _PRESENTATION_TIME_KEYS:
+        if out.get(key):
+            out[key] = timeutil.iso_to_beijing_iso(out.get(key))
+    hist = out.get("history")
+    if isinstance(hist, list):
+        out["history"] = [
+            {**h, "at": timeutil.iso_to_beijing_iso(h.get("at")) if isinstance(h, dict) and h.get("at") else h.get("at")}
+            if isinstance(h, dict)
+            else h
+            for h in hist
+        ]
+    return out
+
+
 class CpaPoolMonitor:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -437,7 +460,7 @@ class CpaPoolMonitor:
         self._load_state()
 
     def _log(self, message: str) -> None:
-        line = f"[{time.strftime('%H:%M:%S')}] {str(message).rstrip()}"
+        line = f"[{timeutil.now_clock()}] {str(message).rstrip()}"
         with self._lock:
             self._logs.append(line)
 
@@ -452,10 +475,10 @@ class CpaPoolMonitor:
             if isinstance(results, list):
                 results = {str(r.get("email") or "").lower(): r for r in results if isinstance(r, dict)}
             if isinstance(results, dict):
-                self._results = {str(k).lower(): dict(v) for k, v in results.items() if isinstance(v, dict)}
+                self._results = {str(k).lower(): _beijingize_record(dict(v)) for k, v in results.items() if isinstance(v, dict)}
             if isinstance(data.get("summary"), dict):
-                self._summary = dict(data["summary"])
-            self._finished_at = str(data.get("finished_at") or "")
+                self._summary = _beijingize_record(dict(data["summary"]))
+            self._finished_at = timeutil.iso_to_beijing_iso(data.get("finished_at")) if data.get("finished_at") else ""
         except Exception:
             return
 
@@ -507,13 +530,13 @@ class CpaPoolMonitor:
     def status(self) -> dict[str, Any]:
         self.ensure_scheduler()
         with self._lock:
-            summary = dict(self._summary)
+            summary = _beijingize_record(dict(self._summary))
             progress = dict(self._progress)
             logs = list(self._logs)[-240:]
             settings = dict(self._settings)
             running = self._running
-            started_at = self._started_at
-            finished_at = self._finished_at
+            started_at = timeutil.iso_to_beijing_iso(self._started_at) if self._started_at else ""
+            finished_at = timeutil.iso_to_beijing_iso(self._finished_at) if self._finished_at else ""
             last_error = self._last_error
             next_scan_at = self._next_scan_at
             results_total = len(self._results)
@@ -549,7 +572,7 @@ class CpaPoolMonitor:
         q = query.strip().lower()
         st = status.strip().lower()
         with self._lock:
-            items = [dict(v) for v in self._results.values()]
+            items = [_beijingize_record(dict(v)) for v in self._results.values()]
         if q:
             items = [i for i in items if q in str(i.get("email") or "").lower() or q in str(i.get("status") or "").lower() or q in str(i.get("reason") or "").lower()]
         if st and st != "all":
@@ -595,7 +618,7 @@ class CpaPoolMonitor:
                         meta = json.loads(mp.read_text(encoding="utf-8"))
                     except Exception:
                         meta = {}
-                items.append({"email": email, "bucket": item_bucket, "path": str(p), "filename": p.name, "mtime": p.stat().st_mtime, "mtime_iso": datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"), "meta": meta})
+                items.append({"email": email, "bucket": item_bucket, "path": str(p), "filename": p.name, "mtime": p.stat().st_mtime, "mtime_iso": timeutil.timestamp_display(p.stat().st_mtime), "meta": meta})
         total = len(items)
         page = max(1, int(page or 1))
         page_size = max(1, min(int(page_size or 100), 10000))
