@@ -6,6 +6,16 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "DrissionPage>=4.1",   # Chrome 自动化（含 turnstilePatch 扩展加载）
     "curl_cffi>=0.7",      # HTTP client（带 TLS 指纹），邮箱 API + grok2api 调用
+    "fastapi>=0.139.2",
+    "uvicorn>=0.51.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "python-dotenv>=1.0.0",
+    "quart>=0.19.0",
+    "patchright>=1.0.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+    "python-multipart>=0.0.32",
 ]
 
 # application 模式：不构建 wheel，uv 只管依赖

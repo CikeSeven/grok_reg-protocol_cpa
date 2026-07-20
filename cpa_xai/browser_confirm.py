@@ -233,7 +233,14 @@ def create_standalone_page(
 
     # explicit / runtime config first; env only as fallback
     proxy = resolve_proxy(proxy)
-    chrome_proxy = proxy_for_chromium(proxy)
+    chrome_proxy = ""
+    if proxy:
+        try:
+            import proxy_relay  # 项目根模块：带认证/socks5 走本地中继
+
+            chrome_proxy = proxy_relay.chromium_proxy_for(proxy)
+        except Exception:
+            chrome_proxy = proxy_for_chromium(proxy)
     if chrome_proxy:
         opts.set_argument(f"--proxy-server={chrome_proxy}")
         log(f"browser proxy={proxy_log_label(proxy)} (chromium {chrome_proxy})")
@@ -242,6 +249,20 @@ def create_standalone_page(
 
     browser = Chromium(opts)
     page = browser.latest_tab
+    # 代理带账密时通过 CDP 应答 407（--proxy-server 无法内嵌认证）
+    if chrome_proxy and proxy:
+        try:
+            from grok_register_ttk import attach_proxy_auth  # type: ignore
+
+            attach_proxy_auth(page, proxy_raw=proxy, log_callback=log)
+        except Exception as e:  # noqa: BLE001
+            log(f"proxy auth attach failed: {e}")
+    try:
+        from grok_register_ttk import apply_page_fingerprint  # type: ignore
+
+        apply_page_fingerprint(page, log_callback=log)
+    except Exception:  # noqa: BLE001
+        pass
     log("standalone chromium started")
     return browser, page
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Callable
@@ -26,6 +27,35 @@ def _noop(_: str) -> None:
     return None
 
 
+def _is_transient_network_error(exc: BaseException | str) -> bool:
+    text = str(exc or "").lower()
+    markers = (
+        "failed to perform",
+        "curl:",
+        "tls connect error",
+        "connect error",
+        "connection reset",
+        "connection refused",
+        "connection aborted",
+        "proxy connect",
+        "socks",
+        "timed out",
+        "timeout",
+        "could not connect",
+        "operation timed out",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _sleep_retry(seconds: float, cancel: Callable[[], bool] | None = None) -> bool:
+    deadline = time.monotonic() + max(0.0, float(seconds or 0))
+    while time.monotonic() < deadline:
+        if cancel and cancel():
+            return False
+        time.sleep(min(0.25, deadline - time.monotonic()))
+    return not (cancel and cancel())
+
+
 def mint_and_export(
     *,
     email: str,
@@ -48,6 +78,8 @@ def mint_and_export(
     prefer_protocol: bool = True,
     protocol_only: bool = False,
     protocol_poll_timeout_sec: float = 90.0,
+    protocol_network_retries: int = 1,
+    protocol_network_retry_delay_sec: float = 1.5,
     allow_device_flow_fallback: bool = False,
     protocol_flow: str = "pkce",
     log: LogFn | None = None,
@@ -90,25 +122,49 @@ def mint_and_export(
     if prefer_protocol and sso_val:
         if protocol_flow == "pkce":
             log("mint try protocol (SSO HTTP PKCE authorization-code flow)")
-            try:
-                tokens = mint_with_sso_pkce(
-                    sso_cookie=sso_val,
-                    email=email,
-                    proxy=resolved or None,
-                    log=log,
-                    cancel=cancel,
-                )
-                log("mint protocol PKCE SUCCESS")
-            except PKCEMintError as e:
-                protocol_err = str(e)
-                log(f"mint protocol PKCE failed: {e}")
-                if allow_device_flow_fallback:
-                    log("mint fallback → device flow")
-            except Exception as e:  # noqa: BLE001
-                protocol_err = str(e)
-                log(f"mint protocol PKCE exception: {e}")
-                if allow_device_flow_fallback:
-                    log("mint fallback → device flow")
+            max_network_retries = max(0, int(protocol_network_retries or 0))
+            attempts = 1 + max_network_retries
+            for attempt in range(1, attempts + 1):
+                try:
+                    tokens = mint_with_sso_pkce(
+                        sso_cookie=sso_val,
+                        email=email,
+                        proxy=resolved or None,
+                        log=log,
+                        cancel=cancel,
+                    )
+                    log("mint protocol PKCE SUCCESS")
+                    break
+                except PKCEMintError as e:
+                    protocol_err = str(e)
+                    if attempt < attempts and _is_transient_network_error(e):
+                        log(
+                            f"mint protocol PKCE network error: {e}; "
+                            f"retry {attempt}/{max_network_retries}"
+                        )
+                        if not _sleep_retry(protocol_network_retry_delay_sec, cancel):
+                            protocol_err = "cancelled"
+                            break
+                        continue
+                    log(f"mint protocol PKCE failed: {e}")
+                    if allow_device_flow_fallback:
+                        log("mint fallback → device flow")
+                    break
+                except Exception as e:  # noqa: BLE001
+                    protocol_err = str(e)
+                    if attempt < attempts and _is_transient_network_error(e):
+                        log(
+                            f"mint protocol PKCE network exception: {e}; "
+                            f"retry {attempt}/{max_network_retries}"
+                        )
+                        if not _sleep_retry(protocol_network_retry_delay_sec, cancel):
+                            protocol_err = "cancelled"
+                            break
+                        continue
+                    log(f"mint protocol PKCE exception: {e}")
+                    if allow_device_flow_fallback:
+                        log("mint fallback → device flow")
+                    break
 
             if tokens is None and not allow_device_flow_fallback:
                 return {

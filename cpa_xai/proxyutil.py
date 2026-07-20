@@ -29,8 +29,13 @@ def get_runtime_proxy() -> str | None:
 
 
 def resolve_proxy(explicit: str | None = None) -> str:
+    explicit_s = (explicit or "").strip()
+    # Sentinel used by pool checks/monitors when they must bypass both explicit
+    # proxy config and inherited HTTP(S)_PROXY environment variables.
+    if explicit_s.lower() in {"direct", "none", "no_proxy", "noproxy", "off"}:
+        return ""
     for cand in (
-        (explicit or "").strip(),
+        explicit_s,
         (get_runtime_proxy() or "").strip(),
         (os.environ.get("https_proxy") or "").strip(),
         (os.environ.get("HTTPS_PROXY") or "").strip(),

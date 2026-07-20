@@ -13,7 +13,13 @@ config.json.bak*
 .env
 accounts_*.txt
 emails_used.txt
+emails_error.txt
+emails_error.txt.*
+proxies.txt
+proxies_state.json
 mail_credentials.txt
+cpa_pool_state.json
+cpa_quarantine/
 cpa_auths/
 cookies/
 screenshots/

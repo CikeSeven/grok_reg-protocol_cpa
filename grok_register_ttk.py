@@ -26,6 +26,7 @@ from curl_cffi import requests
 
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+MAX_REGISTER_THREADS = 100
 
 DEFAULT_CONFIG = {
     "duckmail_api_key": "",
@@ -64,9 +65,34 @@ DEFAULT_CONFIG = {
     "hotmail_max_aliases_per_account": 5,
     "hotmail_poll_interval": 5,
     "hotmail_recent_seconds": 900,
+    "hotmail_issued_after_grace_seconds": 10,
+    "hotmail_oauth_network_retries": 2,
+    "hotmail_oauth_retry_delay_sec": 1.0,
     "hotmail_imap_hosts": "outlook.office365.com,imap-mail.outlook.com",
     "hotmail_imap_last_n": 30,
     "hotmail_require_recipient_match": True,
+    # auto: 按凭证授权自动探测（IMAP scope refresh + XOAUTH2 试登录）；imap/graph: 强制
+    "hotmail_protocol": "auto",
+    # 注册阶段协议路径：curl_cffi 重放 accounts.x.ai 注册请求拿 SSO；失败可回退浏览器。
+    "protocol_register": False,
+    "protocol_only": False,
+    "protocol_register_fallback_browser": True,
+    "protocol_solver_url": "http://127.0.0.1:5072",
+    "protocol_solver_pass_proxy": True,
+    "protocol_solver_locale": "",
+    "protocol_solver_accept_language": "",
+    "protocol_solver_timezone": "",
+    "protocol_impersonate": "chrome110",
+    "protocol_register_max_attempts": 3,
+    "protocol_solver_poll_timeout": 30,
+    "protocol_solver_poll_interval": 1.2,
+    "yescaptcha_key": "",
+    "turnstile_site_key": "0x4AAAAAAAhr9JGVDZbrZOo0",
+    "protocol_email_tempmail_fallback": False,
+    "cpa_pkce_network_retries": 1,
+    "cpa_pkce_network_retry_delay_sec": 1.5,
+    # 浏览器时区覆盖（留空不覆盖；用美区代理时建议 America/New_York 等）
+    "browser_timezone": "",
 }
 
 config = DEFAULT_CONFIG.copy()
@@ -83,6 +109,8 @@ _hotmail_reserved_aliases = set()
 _hotmail_token_map = {}
 _hotmail_refresh_locks = {}
 _hotmail_refresh_locks_lock = threading.Lock()
+_hotmail_protocol_map = {}
+_thread_proxy = threading.local()
 
 
 
@@ -91,6 +119,7 @@ _hotmail_refresh_locks_lock = threading.Lock()
 _EMAILS_USED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "emails_used.txt")
 _EMAILS_ERROR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "emails_error.txt")
 _email_track_lock = threading.Lock()
+_email_issued_after_map = {}
 
 
 def mark_used(email: str, password: str = ""):
@@ -98,10 +127,7 @@ def mark_used(email: str, password: str = ""):
     with _email_track_lock:
         with open(_EMAILS_USED_FILE, "a", encoding="utf-8") as f:
             f.write(f"{email}----{password}----ok\n")
-    try:
-        _hotmail_release_alias(email)
-    except Exception:
-        pass
+    release_email(email)
 
 
 def mark_error(email: str, password: str = "", reason: str = ""):
@@ -109,10 +135,80 @@ def mark_error(email: str, password: str = "", reason: str = ""):
     with _email_track_lock:
         with open(_EMAILS_ERROR_FILE, "a", encoding="utf-8") as f:
             f.write(f"{email}----{password}----{reason}\n")
+    release_email(email)
+
+
+def release_email(email: str):
+    """释放运行期占用的邮箱/别名，但不写入成功或失败账本。"""
+    email_key = str(email or "").strip().lower()
+    if email_key:
+        with _email_track_lock:
+            _email_issued_after_map.pop(email_key, None)
     try:
         _hotmail_release_alias(email)
     except Exception:
         pass
+
+
+def remember_email_issued_after(email: str, issued_after=None):
+    """记录当前邮箱本次触发发码的大致时间，用于过滤旧验证码。"""
+    email_key = str(email or "").strip().lower()
+    if not email_key:
+        return None
+    try:
+        ts = float(issued_after if issued_after is not None else time.time())
+    except Exception:
+        ts = time.time()
+    with _email_track_lock:
+        _email_issued_after_map[email_key] = ts
+    return ts
+
+
+def get_email_issued_after(email: str):
+    email_key = str(email or "").strip().lower()
+    if not email_key:
+        return None
+    with _email_track_lock:
+        return _email_issued_after_map.get(email_key)
+
+
+def should_persist_email_error(reason: str) -> bool:
+    """只有明确邮箱凭证/通道不可用时才永久拉黑；验证码等待超时等只释放。"""
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    transient_markers = (
+        "未收到验证码",
+        "获取验证码失败",
+        "验证码阶段失败",
+        "verification code",
+        "no verification code",
+        "get_oai_code",
+        "timeout",
+        "timed out",
+        "cancelled",
+        "用户停止",
+        "turnstile",
+        "sso",
+        "set-cookie",
+        "sign-up http",
+        "verify_email_code failed",
+    )
+    if any(marker in text for marker in transient_markers):
+        return False
+    permanent_markers = (
+        "graph 鉴权失败",
+        "http 401",
+        "http 403",
+        "invalid_grant",
+        "refresh token",
+        "xoauth",
+        "dev_token 无效",
+        "账号文件",
+        "凭证",
+        "credential",
+    )
+    return any(marker in text for marker in permanent_markers)
 
 
 def is_email_used(email: str) -> bool:
@@ -392,8 +488,43 @@ EXTENSION_PATH = os.path.abspath(
 DUCKMAIL_API_BASE = "https://api.duckmail.sbs"
 
 
+def set_thread_proxy(proxy_raw):
+    """为当前线程钉住代理（webui 随机代理模式：每个账号一个代理）。"""
+    try:
+        import proxy_pool
+
+        _thread_proxy.url = proxy_pool.effective_url(proxy_raw) or None
+    except Exception:
+        _thread_proxy.url = None
+
+
+def clear_thread_proxy():
+    _thread_proxy.url = None
+
+
+def get_thread_proxy():
+    return getattr(_thread_proxy, "url", None)
+
+
+def get_effective_proxy():
+    """当前生效代理：线程级钉住 > config.proxy。返回规范化 URL（可含账密）。"""
+    pinned = get_thread_proxy()
+    if pinned:
+        return pinned
+    raw = str(config.get("proxy", "") or "").strip()
+    if not raw:
+        return ""
+    try:
+        import proxy_pool
+
+        # 特殊值 pool:random → 每次调用从池中随机取（注册浏览器每次启动随机）
+        return proxy_pool.effective_url(proxy_pool.resolve_special(raw))
+    except Exception:
+        return raw
+
+
 def get_proxies():
-    proxy = config.get("proxy", "")
+    proxy = get_effective_proxy()
     if proxy:
         return {"http": proxy, "https": proxy}
     return {}
@@ -462,6 +593,16 @@ def _pick_list_payload(data):
     return []
 
 
+def _mail_direct_proxy_kwargs():
+    """邮箱 API 请求默认直连，不继承注册代理 / pool:random。
+
+    注册 x.ai、CPA mint、solver 可以走代理；但 Cloudflare/CloudMail 等
+    邮箱管理 API 是我们自己的基础设施，走注册代理反而会把代理 TLS 抖动
+    放大成“获取邮箱失败”。
+    """
+    return {"proxies": {}}
+
+
 def cloudflare_create_temp_address(api_base):
     global _cf_domain_index
     import random
@@ -488,6 +629,7 @@ def cloudflare_create_temp_address(api_base):
         url,
         json=payload,
         headers={"Content-Type": "application/json", "x-admin-auth": admin_password},
+        **_mail_direct_proxy_kwargs(),
     )
     try:
         resp.raise_for_status()
@@ -778,20 +920,9 @@ CHROMIUM_SLIM_FLAGS = [
 ]
 
 
-def _config_bool(name: str, default: bool = False) -> bool:
-    value = config.get(name, default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-    return bool(default)
-
-
 def _apply_register_headless_options(options) -> bool:
     """Apply optional headless mode for the registration browser."""
-    headless = _config_bool("register_headless", False)
+    headless = _config_bool(config.get("register_headless", False), False)
     if not headless:
         try:
             options.headless(False)
@@ -808,32 +939,235 @@ def _apply_register_headless_options(options) -> bool:
     return True
 
 
+_SCREEN_PROFILES = ((1920, 1080), (1600, 900), (1536, 864), (1440, 900), (1366, 768))
+
+
+def _installed_chrome_version():
+    """读取本机 Chrome 真实版本（UA 必须与其一致，否则 CF 对验 userAgentData 穿帮）。"""
+    import subprocess
+
+    for path in (
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ):
+        if os.path.isfile(path):
+            try:
+                out = subprocess.check_output(
+                    [path, "--version"], timeout=5, text=True, stderr=subprocess.DEVNULL
+                )
+                m = re.search(r"(\d+\.\d+\.\d+\.\d+)", out or "")
+                if m:
+                    return m.group(1)
+            except Exception:
+                continue
+    return ""
+
+
+def _fingerprint_ua():
+    """生成与本地 Chrome 一致的 (user_agent, platform, platform_version, full_version)。
+
+    config.user_agent 仅在主版本与本地 Chrome 一致时沿用。
+    """
+    import platform as _plat
+
+    version = _installed_chrome_version()
+    major = version.split(".")[0] if version else ""
+    ua_cfg = str(config.get("user_agent") or "").strip()
+    m = re.search(r"Chrome/(\d+)", ua_cfg)
+    if ua_cfg and m and major and m.group(1) == major:
+        platform_name = (
+            "Windows" if "Windows" in ua_cfg else ("macOS" if "Mac OS" in ua_cfg else "Linux")
+        )
+        plat_ver = "15.0.0" if platform_name == "Windows" else (_plat.release().split("-")[0] or "6.0.0")
+        full = re.search(r"Chrome/([\d.]+)", ua_cfg).group(1)
+        return ua_cfg, platform_name, plat_ver, full
+    full = version or "138.0.0.0"
+    if os.name == "nt":
+        ua = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{full} Safari/537.36"
+        )
+        return ua, "Windows", "15.0.0", full
+    ua = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{full} Safari/537.36"
+    )
+    return ua, "Linux", (_plat.release().split("-")[0] or "6.0.0"), full
+
+
+def apply_page_fingerprint(page, log_callback=None):
+    """CDP 级指纹对齐（参考 grok_oauth）：UA 元数据 / 屏幕 / locale / 硬件 / navigator 补丁。
+
+    仅设置 UA 字符串会被 CF 用 sec-ch-ua / navigator.userAgentData 对验识破，
+    必须通过 Network.setUserAgentOverride 带上 userAgentMetadata。
+    """
+    try:
+        ua, platform_name, plat_ver, full_version = _fingerprint_ua()
+        major = full_version.split(".")[0]
+        brands = [
+            {"brand": "Chromium", "version": major},
+            {"brand": "Google Chrome", "version": major},
+            {"brand": "Not_A Brand", "version": "99"},
+        ]
+        random.shuffle(brands)
+        full_list = [
+            (
+                {"brand": b["brand"], "version": full_version}
+                if b["brand"] != "Not_A Brand"
+                else {"brand": b["brand"], "version": "99.0.0.0"}
+            )
+            for b in brands
+        ]
+        width, height = random.choice(_SCREEN_PROFILES)
+        hw = random.choice((4, 8, 12, 16))
+        nav_platform = "Linux x86_64" if platform_name == "Linux" else "Win32"
+        ua_platform = "Linux x86_64" if platform_name == "Linux" else platform_name
+        try:
+            page.run_cdp(
+                "Network.setUserAgentOverride",
+                userAgent=ua,
+                acceptLanguage="en-US,en;q=0.9",
+                platform=ua_platform,
+                userAgentMetadata={
+                    "brands": brands,
+                    "fullVersionList": full_list,
+                    "fullVersion": full_version,
+                    "platform": platform_name,
+                    "platformVersion": plat_ver,
+                    "architecture": "x86",
+                    "model": "",
+                    "mobile": False,
+                    "bitness": "64",
+                    "wow64": False,
+                },
+            )
+            page.run_cdp(
+                "Emulation.setDeviceMetricsOverride",
+                width=width,
+                height=height,
+                deviceScaleFactor=1,
+                mobile=False,
+                screenWidth=width,
+                screenHeight=height,
+            )
+            page.run_cdp("Emulation.setLocaleOverride", locale="en-US")
+            page.run_cdp("Emulation.setHardwareConcurrencyOverride", hardwareConcurrency=hw)
+            tz = str(config.get("browser_timezone") or "").strip()
+            if tz:
+                page.run_cdp("Emulation.setTimezoneOverride", timezoneId=tz)
+        except Exception:
+            pass
+        src = f"""
+(() => {{
+  const define = (t, n, v) => {{ try {{ Object.defineProperty(t, n, {{get: () => v, configurable: true}}); }} catch (e) {{}} }};
+  define(Navigator.prototype, 'webdriver', false);
+  define(Navigator.prototype, 'platform', '{nav_platform}');
+  define(Navigator.prototype, 'languages', Object.freeze(['en-US','en']));
+  define(Navigator.prototype, 'hardwareConcurrency', {hw});
+  define(Navigator.prototype, 'deviceMemory', 8);
+  define(Navigator.prototype, 'maxTouchPoints', 0);
+}})();
+"""
+        page.run_cdp("Page.addScriptToEvaluateOnNewDocument", source=src)
+        if log_callback:
+            log_callback(f"[*] 指纹对齐: Chrome/{major} {platform_name} {width}x{height}")
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[Debug] 指纹对齐失败: {exc}")
+
+
 def create_browser_options():
     options = ChromiumOptions()
     options.auto_port()
     options.set_timeouts(base=1)
+    headless_enabled = _config_bool(config.get("register_headless", False), False)
     for flag in CHROMIUM_SLIM_FLAGS:
+        # 无头下保留图像/软件光栅：Turnstile 风控依赖 canvas/WebGL 渲染指纹
+        if headless_enabled and flag in ("--disable-images", "--disable-software-rasterizer"):
+            continue
         options.set_argument(flag)
+    options.set_argument("--disable-blink-features=AutomationControlled")
+    options.set_argument("--force-device-scale-factor=1")
     _apply_register_headless_options(options)
+    # 无头模式下 Chrome UA 带 HeadlessChrome 标记，accounts.x.ai 直接 CF 硬拦截；
+    # 且 UA 必须与真实 Chrome 主版本/userAgentData 一致（CF 会对验），
+    # 用 _fingerprint_ua 生成（config.user_agent 仅在主版本匹配时沿用）。
+    ua, _, _, _ = _fingerprint_ua()
+    try:
+        options.set_user_agent(ua)
+    except Exception:
+        pass
     if os.path.exists(EXTENSION_PATH):
         options.add_extension(EXTENSION_PATH)
-    # Apply config.json "proxy" to Chromium. Without this, only HTTP helpers
-    # used get_proxies(); the browser itself fell through to system/env proxy.
-    proxy = (config.get("proxy") or "").strip()
+    # Apply effective proxy (thread-pinned > config "proxy") to Chromium.
+    # 带账密或 socks5 的代理由 proxy_relay 起本地无认证中继；http 无认证直连。
+    proxy = get_effective_proxy()
     if proxy:
         try:
-            from urllib.parse import urlparse
+            import proxy_relay
 
-            u = urlparse(proxy if "://" in proxy else f"http://{proxy}")
-            host = u.hostname or ""
-            if host:
-                port = u.port or (443 if (u.scheme or "http") == "https" else 80)
-                scheme = u.scheme or "http"
-                # Chromium --proxy-server cannot embed user:pass
-                options.set_argument(f"--proxy-server={scheme}://{host}:{port}")
-        except Exception as e:
-            print(f"  [proxy] set browser proxy failed: {e}")
+            chrome_proxy = proxy_relay.chromium_proxy_for(proxy)
+        except Exception:
+            chrome_proxy = ""
+        if chrome_proxy:
+            try:
+                options.set_argument(f"--proxy-server={chrome_proxy}")
+            except Exception as e:
+                print(f"  [proxy] set browser proxy failed: {e}")
     return options
+
+
+def attach_proxy_auth(page, proxy_raw=None, log_callback=None):
+    """若生效代理带账密，通过 CDP Fetch 域自动应答 407 代理认证。
+
+    需要在每个 tab 创建后调用一次（Chromium --proxy-server 不支持内嵌账密）。
+    """
+    try:
+        import proxy_pool
+
+        proxy = (
+            proxy_pool.normalize_proxy_url(proxy_raw)
+            if proxy_raw
+            else get_effective_proxy()
+        )
+        parsed = proxy_pool.parse_proxy(proxy) if proxy else None
+    except Exception:
+        parsed = None
+    if not parsed or not parsed.get("user"):
+        return False
+    try:
+        user, password = parsed["user"], parsed["password"]
+
+        def _on_auth(**params):
+            request_id = params.get("requestId")
+            if not request_id:
+                return
+            try:
+                page.run_cdp(
+                    "Fetch.continueWithAuth",
+                    requestId=request_id,
+                    authChallengeResponse={
+                        "response": "ProvideCredentials",
+                        "username": user,
+                        "password": password,
+                    },
+                )
+            except Exception:
+                pass
+
+        page.run_cdp("Fetch.enable", handleAuthRequests=True)
+        page.driver.set_callback("Fetch.authRequired", _on_auth)
+        if log_callback:
+            import proxy_pool
+
+            log_callback(f"[*] 已挂载代理认证: {proxy_pool.mask_proxy(proxy)}")
+        return True
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[Debug] 代理认证挂载失败: {exc}")
+        return False
 
 
 def _build_request_kwargs(**kwargs):
@@ -874,7 +1208,7 @@ def http_post(url, **kwargs):
 
 def raise_if_cancelled(cancel_callback=None):
     if cancel_callback and cancel_callback():
-        raise RegistrationCancelled("鐢ㄦ埛鍋滄娉ㄥ唽")
+        raise RegistrationCancelled("用户停止注册")
 
 
 def sleep_with_cancel(seconds, cancel_callback=None):
@@ -957,7 +1291,7 @@ def cloudflare_get_domains(api_base, api_key=None):
     if admin_password:
         headers["x-admin-auth"] = admin_password
     path = get_cloudflare_path("cloudflare_path_domains", "/api/domains")
-    resp = http_get(f"{api_base}{path}", headers=headers)
+    resp = http_get(f"{api_base}{path}", headers=headers, **_mail_direct_proxy_kwargs())
     resp.raise_for_status()
     return _pick_list_payload(resp.json())
 
@@ -971,7 +1305,13 @@ def cloudflare_create_account(api_base, address, password, api_key=None, expires
     payload = {"address": address, "password": password, "expiresIn": expires_in}
     path = get_cloudflare_path("cloudflare_path_accounts", "/accounts")
     params = cloudflare_apply_auth_params()
-    resp = http_post(f"{api_base}{path}", json=payload, headers=headers, params=params)
+    resp = http_post(
+        f"{api_base}{path}",
+        json=payload,
+        headers=headers,
+        params=params,
+        **_mail_direct_proxy_kwargs(),
+    )
     resp.raise_for_status()
     return resp.json()
 
@@ -988,6 +1328,7 @@ def cloudflare_get_token(api_base, address, password, api_key=None):
         json={"address": address, "password": password},
         headers=headers,
         params=cloudflare_apply_auth_params(),
+        **_mail_direct_proxy_kwargs(),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -1013,6 +1354,7 @@ def cloudflare_get_messages(api_base, token):
                 f"{api_base}{path}",
                 headers=headers,
                 params={"limit": 20, "offset": 0},
+                **_mail_direct_proxy_kwargs(),
             )
             if resp.status_code == 404:
                 last_err = f"{path} HTTP 404"
@@ -1047,7 +1389,7 @@ def cloudflare_get_message_detail(api_base, token, message_id):
             continue
         seen.add(url)
         try:
-            resp = http_get(url, headers=headers)
+            resp = http_get(url, headers=headers, **_mail_direct_proxy_kwargs())
             if resp.status_code in (404, 405):
                 last_err = f"{url} HTTP {resp.status_code}"
                 continue
@@ -1107,7 +1449,7 @@ def yyds_create_account(address=None, domain=None, api_key=None, jwt=None):
     data = resp.json()
     if data.get("success"):
         return data.get("data", {})
-    raise Exception(f"YYDS 鍒涘缓閭澶辫触: {data}")
+    raise Exception(f"YYDS 创建邮箱失败: {data}")
 
 
 def yyds_get_token(address, api_key=None, jwt=None):
@@ -1125,7 +1467,7 @@ def yyds_get_token(address, api_key=None, jwt=None):
     data = resp.json()
     if data.get("success"):
         return data.get("data", {}).get("token")
-    raise Exception(f"YYDS 鑾峰彇token澶辫触: {data}")
+    raise Exception(f"YYDS 获取token失败: {data}")
 
 
 def yyds_get_messages(address, token=None, api_key=None, jwt=None):
@@ -1161,7 +1503,7 @@ def yyds_get_message_detail(message_id, token=None, api_key=None, jwt=None):
     data = resp.json()
     if data.get("success"):
         return data.get("data", {})
-    raise Exception(f"YYDS 鑾峰彇閭欢璇︽儏澶辫触: {data}")
+    raise Exception(f"YYDS 获取邮件详情失败: {data}")
 
 
 def yyds_generate_username(length=10):
@@ -1172,7 +1514,7 @@ def yyds_generate_username(length=10):
 def yyds_pick_domain(api_key=None, jwt=None):
     domains = yyds_get_domains(api_key=api_key, jwt=jwt)
     if not domains:
-        raise Exception("YYDS 娌℃湁杩斿洖浠讳綍鍙敤鍩熷悕")
+        raise Exception("YYDS 没有返回任何可用域名")
     private = [d for d in domains if d.get("isVerified") and not d.get("isPublic")]
     if private:
         return private[0]["domain"]
@@ -1182,7 +1524,7 @@ def yyds_pick_domain(api_key=None, jwt=None):
     verified = [d for d in domains if d.get("isVerified")]
     if verified:
         return verified[0]["domain"]
-    raise Exception("YYDS 鏃犲凡楠岃瘉鍩熷悕鍙敤")
+    raise Exception("YYDS 无已验证域名可用")
 
 
 def yyds_get_email_and_token(api_key=None, jwt=None):
@@ -1200,8 +1542,8 @@ def yyds_get_email_and_token(api_key=None, jwt=None):
     if not temp_token:
         temp_token = yyds_get_token(address, api_key=key, jwt=token)
     if not temp_token:
-        raise Exception("鑾峰彇 YYDS token 澶辫触")
-    print(f"[*] 宸插垱寤?YYDS 閭: {address}")
+        raise Exception("获取 YYDS token 失败")
+    print(f"[*] 已创建 YYDS 邮箱: {address}")
     return address, temp_token
 
 
@@ -1222,7 +1564,7 @@ def yyds_get_oai_code(
             messages = yyds_get_messages(address, token=token, jwt=jwt)
         except Exception as exc:
             if log_callback:
-                log_callback(f"[Debug] YYDS 鎷夊彇閭欢鍒楄〃澶辫触: {exc}")
+                log_callback(f"[Debug] YYDS 拉取邮件列表失败: {exc}")
             sleep_with_cancel(poll_interval, cancel_callback)
             continue
         for msg in messages:
@@ -1237,7 +1579,7 @@ def yyds_get_oai_code(
                 detail = yyds_get_message_detail(msg_id, token=token, jwt=jwt)
             except Exception as exc:
                 if log_callback:
-                    log_callback(f"[Debug] YYDS 鑾峰彇閭欢璇︽儏澶辫触: {exc}")
+                    log_callback(f"[Debug] YYDS 获取邮件详情失败: {exc}")
                 continue
             parts = []
             text_body = detail.get("text") or ""
@@ -1249,11 +1591,11 @@ def yyds_get_oai_code(
             combined = "\n".join(parts)
             subject = detail.get("subject", "")
             if log_callback:
-                log_callback(f"[Debug] YYDS 鏀跺埌閭欢: {subject}")
+                log_callback(f"[Debug] YYDS 收到邮件: {subject}")
             code = extract_verification_code(combined, subject)
             if code:
                 if log_callback:
-                    log_callback(f"[*] YYDS 浠庨偖浠朵腑鎻愬彇鍒伴獙璇佺爜: {code}")
+                    log_callback(f"[*] YYDS 从邮件中提取到验证码: {code}")
                 return code
         sleep_with_cancel(poll_interval, cancel_callback)
     raise Exception(f"YYDS 在 {timeout}s 内未收到验证码邮件")
@@ -1267,7 +1609,7 @@ def generate_username(length=10):
 def pick_domain(api_key=None):
     domains = get_domains(api_key=api_key)
     if not domains:
-        raise Exception("DuckMail 娌℃湁杩斿洖浠讳綍鍙敤鍩熷悕")
+        raise Exception("DuckMail 没有返回任何可用域名")
     private = [d for d in domains if d.get("ownerId")]
     verified_private = [d for d in private if d.get("isVerified")]
     if verified_private:
@@ -1275,7 +1617,7 @@ def pick_domain(api_key=None):
     public = [d for d in domains if d.get("isVerified")]
     if public:
         return public[0]["domain"]
-    raise Exception("DuckMail 鏃犲凡楠岃瘉鍩熷悕鍙敤")
+    raise Exception("DuckMail 无已验证域名可用")
 
 
 # ──────────────────────── CloudMail (maillab/cloud-mail) ────────────────────────
@@ -1481,11 +1823,15 @@ def cloudmail_get_oai_code(
     raise Exception(f"CloudMail 在 {timeout}s 内未收到验证码邮件")
 
 
-# ──────────────────────── Hotmail / Outlook OAuth2 IMAP ────────────────────────
+# ──────────────────────── Hotmail / Outlook OAuth2 收码（IMAP + Graph 双协议） ────────────────────────
 # 导入格式兼容 grok-register：邮箱----密码----ClientID----Token
-# 其中 Token 为 Microsoft OAuth2 refresh_token，验证码通过 outlook.office365.com XOAUTH2 IMAP 拉取。
+# 其中 Token 为 Microsoft OAuth2 refresh_token。
+# 协议取决于 refresh_token 的授权 scope：
+#   - 含 outlook.office.com/IMAP.AccessAsUser.All → XOAUTH2 IMAP（outlook.office365.com）
+#   - 仅含 graph.microsoft.com/Mail.Read（多数接码工具签发的格式）→ Microsoft Graph API
+# hotmail_protocol = auto 时自动探测（IMAP scope 刷新 + 真实 XOAUTH2 试登录）。
 
-HOTMAIL_TOKEN_ENDPOINTS = [
+HOTMAIL_IMAP_TOKEN_ENDPOINTS = [
     # IMAP XOAUTH2 needs an Outlook resource token. Graph Mail.Read tokens can
     # refresh successfully but then fail at IMAP with "authenticated but not connected".
     (
@@ -1496,8 +1842,14 @@ HOTMAIL_TOKEN_ENDPOINTS = [
         "https://login.live.com/oauth20_token.srf",
         {"scope": "offline_access https://outlook.office.com/IMAP.AccessAsUser.All"},
     ),
-    # Fallbacks for existing refresh tokens that were issued with legacy/default scopes.
+]
+
+# Legacy default-scope refresh：老格式 refresh_token（wl.* scope）可能签出可用 IMAP token。
+HOTMAIL_LEGACY_TOKEN_ENDPOINTS = [
     ("https://login.live.com/oauth20_token.srf", {}),
+]
+
+HOTMAIL_GRAPH_TOKEN_ENDPOINTS = [
     (
         "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
         {
@@ -1508,6 +1860,13 @@ HOTMAIL_TOKEN_ENDPOINTS = [
         },
     ),
 ]
+
+# 兼容旧引用：IMAP 优先，Graph 兜底
+HOTMAIL_TOKEN_ENDPOINTS = (
+    HOTMAIL_IMAP_TOKEN_ENDPOINTS
+    + HOTMAIL_LEGACY_TOKEN_ENDPOINTS
+    + HOTMAIL_GRAPH_TOKEN_ENDPOINTS
+)
 
 
 def _config_bool(value, default=False):
@@ -1777,13 +2136,73 @@ def _hotmail_update_refresh_token_file(email_addr, new_refresh_token, log_callba
                 log_callback(f"[Debug] Hotmail refresh_token 回写失败: {exc}")
 
 
-def hotmail_refresh_access_token(account, log_callback=None):
+def _hotmail_is_transient_oauth_error(exc) -> bool:
+    """Network/proxy/TLS errors worth retrying before declaring OAuth refresh failed."""
+    text = str(exc or "").lower()
+    if not text:
+        return False
+    markers = (
+        "curl: (35)",
+        "tls connect",
+        "ssl",
+        "openssl",
+        "proxy",
+        "could not connect",
+        "connection reset",
+        "connection refused",
+        "connection closed",
+        "connection timed out",
+        "timeout",
+        "timed out",
+        "broken pipe",
+        "unexpected eof",
+        "network is unreachable",
+        "failed to connect",
+        "failed to perform",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _hotmail_oauth_retry_settings() -> tuple[int, float]:
+    try:
+        retries = int(config.get("hotmail_oauth_network_retries", 2) or 0)
+    except Exception:
+        retries = 2
+    try:
+        delay = float(config.get("hotmail_oauth_retry_delay_sec", 1.0) or 0)
+    except Exception:
+        delay = 1.0
+    return max(0, retries), max(0.0, delay)
+
+
+def _hotmail_oauth_post_with_retries(url, data, *, timeout=30, log_callback=None):
+    retries, delay = _hotmail_oauth_retry_settings()
+    attempts = 1 + retries
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return http_post(url, data=data, timeout=timeout)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= attempts or not _hotmail_is_transient_oauth_error(exc):
+                raise
+            if log_callback:
+                log_callback(
+                    f"[Debug] Hotmail OAuth2 网络/TLS 错误，重试 {attempt}/{retries}: {exc}"
+                )
+            if delay > 0:
+                time.sleep(delay)
+    raise last_exc or Exception("Hotmail OAuth2 refresh network retry failed")
+
+
+def _hotmail_refresh_token_with_endpoints(account, endpoints, log_callback=None):
+    """按指定端点刷新 access_token；成功回写新 refresh_token。全部失败抛异常。"""
     email_addr = account["email"]
     lock = _hotmail_get_refresh_lock(email_addr)
     with lock:
         refresh_token = account.get("refresh_token", "")
         last_error = None
-        for url, extra in HOTMAIL_TOKEN_ENDPOINTS:
+        for url, extra in endpoints:
             try:
                 data = {
                     "client_id": account["client_id"],
@@ -1791,7 +2210,12 @@ def hotmail_refresh_access_token(account, log_callback=None):
                     "grant_type": "refresh_token",
                     **extra,
                 }
-                resp = http_post(url, data=data, timeout=30)
+                resp = _hotmail_oauth_post_with_retries(
+                    url,
+                    data,
+                    timeout=30,
+                    log_callback=log_callback,
+                )
                 try:
                     token_data = resp.json()
                 except Exception:
@@ -1812,6 +2236,91 @@ def hotmail_refresh_access_token(account, log_callback=None):
                 last_error = exc
                 continue
         raise Exception(f"Hotmail OAuth2 refresh 失败: {last_error}")
+
+
+def _hotmail_try_refresh_any(account, endpoints):
+    """静默版刷新：任一端点成功即返回 access_token，否则返回 None。"""
+    email_addr = account["email"]
+    lock = _hotmail_get_refresh_lock(email_addr)
+    with lock:
+        refresh_token = account.get("refresh_token", "")
+        for url, extra in endpoints:
+            try:
+                data = {
+                    "client_id": account["client_id"],
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                    **extra,
+                }
+                resp = _hotmail_oauth_post_with_retries(url, data, timeout=30)
+                token_data = resp.json()
+                access_token = token_data.get("access_token")
+                if access_token:
+                    new_refresh = token_data.get("refresh_token") or refresh_token
+                    if new_refresh and new_refresh != refresh_token:
+                        account["refresh_token"] = new_refresh
+                        _hotmail_update_refresh_token_file(email_addr, new_refresh)
+                    return access_token
+            except Exception:
+                continue
+        return None
+
+
+def hotmail_refresh_access_token(account, log_callback=None):
+    return _hotmail_refresh_token_with_endpoints(
+        account, HOTMAIL_TOKEN_ENDPOINTS, log_callback=log_callback
+    )
+
+
+def _hotmail_try_imap_auth(mailbox_email, access_token):
+    """真实 XOAUTH2 试登录，任一 IMAP host 成功即 True。"""
+    import imaplib
+
+    for host in _hotmail_get_imap_hosts():
+        imap = None
+        try:
+            imap = imaplib.IMAP4_SSL(host, 993, timeout=30)
+            auth_string = f"user={mailbox_email}\x01auth=Bearer {access_token}\x01\x01"
+            imap.authenticate("XOAUTH2", lambda _: auth_string.encode())
+            return True
+        except Exception:
+            continue
+        finally:
+            if imap is not None:
+                try:
+                    imap.logout()
+                except Exception:
+                    pass
+    return False
+
+
+def hotmail_detect_protocol(account, log_callback=None):
+    """探测凭证可用的收码协议：imap / graph。结果按主邮箱缓存。
+
+    config hotmail_protocol 可强制指定（auto/imap/graph）。
+    """
+    email_key = account["email"].strip().lower()
+    forced = str(config.get("hotmail_protocol", "auto") or "auto").strip().lower()
+    if forced in ("imap", "graph"):
+        _hotmail_protocol_map[email_key] = forced
+        return forced
+    cached = _hotmail_protocol_map.get(email_key)
+    if cached:
+        return cached
+
+    # IMAP：scoped 刷新 + legacy 刷新，拿到 token 后必须真实 XOAUTH2 试登录确认。
+    for endpoints in (HOTMAIL_IMAP_TOKEN_ENDPOINTS, HOTMAIL_LEGACY_TOKEN_ENDPOINTS):
+        token = _hotmail_try_refresh_any(account, endpoints)
+        if token and _hotmail_try_imap_auth(account["email"], token):
+            _hotmail_protocol_map[email_key] = "imap"
+            if log_callback:
+                log_callback(f"[*] Hotmail 收码协议探测: {email_key} -> imap")
+            return "imap"
+
+    _hotmail_protocol_map[email_key] = "graph"
+    if log_callback:
+        log_callback(f"[*] Hotmail 收码协议探测: {email_key} -> graph（凭证未授权 IMAP scope）")
+    return "graph"
 
 
 def _hotmail_decode_header(value):
@@ -1864,7 +2373,25 @@ def _hotmail_get_imap_hosts():
     return out
 
 
-def _hotmail_imap_get_code(mailbox_email, target_email, access_token, log_callback=None, host=None):
+def _hotmail_effective_filter_after(recent_seconds, issued_after=None):
+    try:
+        recent_after = time.time() - max(60, int(recent_seconds or 900))
+    except Exception:
+        recent_after = time.time() - 900
+    if issued_after is None:
+        return recent_after
+    try:
+        issued_ts = float(issued_after)
+    except Exception:
+        return recent_after
+    try:
+        grace = float(config.get("hotmail_issued_after_grace_seconds", 10) or 10)
+    except Exception:
+        grace = 10.0
+    return max(recent_after, issued_ts - max(0.0, grace))
+
+
+def _hotmail_imap_get_code(mailbox_email, target_email, access_token, log_callback=None, host=None, issued_after=None):
     import email as email_lib
     import imaplib
     from datetime import timezone
@@ -1881,7 +2408,7 @@ def _hotmail_imap_get_code(mailbox_email, target_email, access_token, log_callba
     require_recipient = _config_bool(
         config.get("hotmail_require_recipient_match", True), default=True
     )
-    filter_after_ts = int((time.time() - max(60, recent_seconds)) * 1000)
+    filter_after_ts = int(_hotmail_effective_filter_after(recent_seconds, issued_after) * 1000)
     target_lower = (target_email or "").strip().lower()
     keywords = ["x.ai", "xai", "grok", "verification", "code", "confirm", "验证码", "确认"]
 
@@ -1953,6 +2480,84 @@ def _hotmail_imap_get_code(mailbox_email, target_email, access_token, log_callba
             pass
 
 
+def _hotmail_graph_message_text(body_obj):
+    """Graph body -> 纯文本（对齐 IMAP 路径的 html 处理方式）。"""
+    import html as html_lib
+
+    content = (body_obj or {}).get("content") or ""
+    content_type = str((body_obj or {}).get("contentType") or "").lower()
+    if content_type == "html":
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html_lib.unescape(content))).strip()
+    return content
+
+
+def hotmail_graph_get_code(mailbox_email, target_email, access_token, log_callback=None, issued_after=None):
+    """通过 Microsoft Graph API 拉取最新邮件并提取验证码（Mail.Read scope）。"""
+    from datetime import datetime, timezone
+
+    try:
+        recent_seconds = int(config.get("hotmail_recent_seconds", 900) or 900)
+    except Exception:
+        recent_seconds = 900
+    try:
+        last_n = int(config.get("hotmail_imap_last_n", 30) or 30)
+    except Exception:
+        last_n = 30
+    require_recipient = _config_bool(
+        config.get("hotmail_require_recipient_match", True), default=True
+    )
+    filter_after_ts = _hotmail_effective_filter_after(recent_seconds, issued_after)
+    target_lower = (target_email or "").strip().lower()
+    keywords = ["x.ai", "xai", "grok", "verification", "code", "confirm", "验证码", "确认"]
+
+    if log_callback:
+        log_callback(f"[Debug] Hotmail/Outlook Graph 拉取邮件: user={mailbox_email}")
+    url = (
+        "https://graph.microsoft.com/v1.0/me/messages"
+        f"?$top={max(1, last_n)}&$orderby=receivedDateTime desc"
+        "&$select=subject,from,receivedDateTime,toRecipients,ccRecipients,body"
+    )
+    resp = http_get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=30)
+    if resp.status_code in (401, 403):
+        raise Exception(f"Graph 鉴权失败 HTTP {resp.status_code}")
+    if resp.status_code != 200:
+        raise Exception(f"Graph 拉取邮件失败 HTTP {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+
+    for message in data.get("value", []) or []:
+        received = message.get("receivedDateTime") or ""
+        if received:
+            try:
+                dt = datetime.fromisoformat(str(received).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt.timestamp() < filter_after_ts:
+                    continue
+            except Exception:
+                pass
+
+        recipient_blob = " ".join(
+            str((r.get("emailAddress") or {}).get("address") or "")
+            for r in (message.get("toRecipients") or []) + (message.get("ccRecipients") or [])
+        ).lower()
+        if require_recipient and target_lower and target_lower not in recipient_blob:
+            continue
+
+        subject = message.get("subject") or ""
+        sender = str(((message.get("from") or {}).get("emailAddress") or {}).get("address") or "")
+        body = _hotmail_graph_message_text(message.get("body"))
+        combined = f"{subject}\n{sender}\n{recipient_blob}\n{body}"
+        combined_lower = combined.lower()
+        if not any(kw in combined_lower for kw in keywords):
+            continue
+        code = extract_verification_code(combined, subject)
+        if code:
+            if log_callback:
+                log_callback(f"[*] Hotmail/Outlook 从邮件中提取到验证码: {code}")
+            return code
+    return None
+
+
 def hotmail_get_oai_code(
     dev_token,
     email,
@@ -1961,12 +2566,14 @@ def hotmail_get_oai_code(
     log_callback=None,
     cancel_callback=None,
     resend_callback=None,
+    issued_after=None,
 ):
     token_info = _hotmail_token_map.get(dev_token)
     if not token_info:
         raise Exception("Hotmail/Outlook dev_token 无效或已过期")
     account = token_info["account"]
     mailbox_email = account["email"]
+    protocol = hotmail_detect_protocol(account, log_callback=log_callback)
     try:
         configured_interval = float(config.get("hotmail_poll_interval", 5) or 5)
     except Exception:
@@ -1980,7 +2587,10 @@ def hotmail_get_oai_code(
         raise_if_cancelled(cancel_callback)
         if resend_callback and time.time() >= next_resend_at:
             try:
+                resend_started = time.time()
                 resend_callback()
+                issued_after = resend_started
+                remember_email_issued_after(email, issued_after)
                 if log_callback:
                     log_callback("[*] 已触发重新发送验证码")
             except Exception as exc:
@@ -1989,33 +2599,48 @@ def hotmail_get_oai_code(
             next_resend_at = time.time() + 60
         try:
             if not access_token:
-                access_token = hotmail_refresh_access_token(account, log_callback=log_callback)
-            code = None
-            host_errors = []
-            for imap_host in _hotmail_get_imap_hosts():
-                try:
-                    code = _hotmail_imap_get_code(
-                        mailbox_email,
-                        email,
-                        access_token,
-                        log_callback=log_callback,
-                        host=imap_host,
+                if protocol == "graph":
+                    access_token = _hotmail_refresh_token_with_endpoints(
+                        account, HOTMAIL_GRAPH_TOKEN_ENDPOINTS, log_callback=log_callback
                     )
-                    # 成功连接但本轮未找到码，不必再换同邮箱另一个 host 重扫。
-                    break
-                except Exception as host_exc:
-                    host_errors.append(f"{imap_host}: {host_exc}")
-                    if log_callback:
-                        log_callback(f"[Debug] Hotmail/Outlook IMAP host 失败: {imap_host}: {host_exc}")
-                    continue
-            if code is None and host_errors and len(host_errors) >= len(_hotmail_get_imap_hosts()):
-                raise Exception("; ".join(host_errors))
+                else:
+                    access_token = hotmail_refresh_access_token(account, log_callback=log_callback)
+            code = None
+            if protocol == "graph":
+                code = hotmail_graph_get_code(
+                    mailbox_email,
+                    email,
+                    access_token,
+                    log_callback=log_callback,
+                    issued_after=issued_after,
+                )
+            else:
+                host_errors = []
+                for imap_host in _hotmail_get_imap_hosts():
+                    try:
+                        code = _hotmail_imap_get_code(
+                            mailbox_email,
+                            email,
+                            access_token,
+                            log_callback=log_callback,
+                            host=imap_host,
+                            issued_after=issued_after,
+                        )
+                        # 成功连接但本轮未找到码，不必再换同邮箱另一个 host 重扫。
+                        break
+                    except Exception as host_exc:
+                        host_errors.append(f"{imap_host}: {host_exc}")
+                        if log_callback:
+                            log_callback(f"[Debug] Hotmail/Outlook IMAP host 失败: {imap_host}: {host_exc}")
+                        continue
+                if code is None and host_errors and len(host_errors) >= len(_hotmail_get_imap_hosts()):
+                    raise Exception("; ".join(host_errors))
             if code:
                 return code
             if log_callback:
                 log_callback(f"[Debug] Hotmail/Outlook 本轮未找到验证码: {email}")
         except Exception as exc:
-            # OAuth/IMAP 临时失败时下一轮重新 refresh access_token。
+            # OAuth/IMAP/Graph 临时失败时下一轮重新 refresh access_token。
             access_token = None
             if log_callback:
                 log_callback(f"[Debug] Hotmail/Outlook 拉取验证码失败: {exc}")
@@ -2065,7 +2690,7 @@ def get_email_and_token(api_key=None):
     create_account(address, password, api_key=key, expires_in=0)
     token = get_token(address, password)
     if not token:
-        raise Exception("鑾峰彇 DuckMail token 澶辫触")
+        raise Exception("获取 DuckMail token 失败")
     return address, token
 
 
@@ -2077,6 +2702,7 @@ def get_oai_code(
     log_callback=None,
     cancel_callback=None,
     resend_callback=None,
+    issued_after=None,
 ):
     provider = get_email_provider()
     if provider in ("hotmail", "outlook", "outlookmail", "microsoft"):
@@ -2088,6 +2714,7 @@ def get_oai_code(
             log_callback=log_callback,
             cancel_callback=cancel_callback,
             resend_callback=resend_callback,
+            issued_after=issued_after,
         )
     if provider == "yyds":
         return yyds_get_oai_code(
@@ -2138,22 +2765,69 @@ def get_oai_code(
 
 
 def extract_verification_code(text, subject=""):
-    if subject:
-        match = re.search(r"^([A-Z0-9]{3}-[A-Z0-9]{3})\s+xAI", subject, re.IGNORECASE)
-        if match:
-            return match.group(1)
-    match = re.search(r"\b([A-Z0-9]{3}-[A-Z0-9]{3})\b", text, re.IGNORECASE)
-    if match:
-        return match.group(1)
-    patterns = [
-        r"verification\s+code[:\s]+(\d{4,8})",
-        r"your\s+code[:\s]+(\d{4,8})",
-        r"confirm(?:ation)?\s+code[:\s]+(\d{4,8})",
+    """Extract xAI verification code from mail subject/body.
+
+    Prefer explicit code context and subject matches.  Cloudflare parsed HTML can
+    contain unrelated tokens such as ``per-100``; a blind
+    ``[A-Z0-9]{3}-[A-Z0-9]{3}`` search over the whole body may otherwise pick
+    those before the real code in the subject.
+    """
+    text = str(text or "")
+    subject = str(subject or "")
+
+    def _clean(candidate: str | None) -> str | None:
+        if not candidate:
+            return None
+        code = str(candidate).strip().strip(".,;:()[]{}<>\"'").upper()
+        if re.fullmatch(r"[A-Z0-9]{3}-[A-Z0-9]{3}", code):
+            # Reject common non-code CSS/text fragments that matched only
+            # because the old regex was case-insensitive.
+            original = str(candidate).strip().strip(".,;:()[]{}<>\"'")
+            alpha = re.sub(r"[^A-Za-z]", "", original)
+            if alpha and alpha != alpha.upper():
+                return None
+            return code
+        if re.fullmatch(r"\d{4,8}", code):
+            return code
+        return None
+
+    hyphen_code = r"([A-Z0-9]{3}-[A-Z0-9]{3})"
+    numeric_code = r"(\d{4,8})"
+
+    # 1) Strong subject patterns: "SpaceXAI confirmation code: 9F0-3AK"
+    #    and the older "ABC-123 xAI" subject shape.
+    subject_patterns = [
+        rf"(?:verification|confirm(?:ation)?|security|login)?\s*code\s*[:：#-]?\s*{hyphen_code}",
+        rf"confirm(?:ation)?\s+code\s*[:：#-]?\s*{hyphen_code}",
+        rf"^\s*{hyphen_code}\s+xAI\b",
+        rf"\b{hyphen_code}\b",
     ]
-    for pattern in patterns:
+    for pattern in subject_patterns:
+        match = re.search(pattern, subject, re.IGNORECASE)
+        code = _clean(match.group(1) if match else None)
+        if code:
+            return code
+
+    # 2) Body with explicit context. Support both current hyphenated alnum
+    #    codes and older numeric-only providers.
+    context_patterns = [
+        rf"(?:verification|confirm(?:ation)?|security|login)?\s*code\s*[:：#-]?\s*{hyphen_code}",
+        rf"confirm(?:ation)?\s+code\s*[:：#-]?\s*{hyphen_code}",
+        rf"verification\s+code\s*[:：#-]?\s*{numeric_code}",
+        rf"your\s+code\s*[:：#-]?\s*{numeric_code}",
+        rf"confirm(?:ation)?\s+code\s*[:：#-]?\s*{numeric_code}",
+    ]
+    for pattern in context_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1)
+        code = _clean(match.group(1) if match else None)
+        if code:
+            return code
+
+    # 3) Last-resort generic body match, but keep the lowercase-fragment guard.
+    for match in re.finditer(r"\b([A-Z0-9]{3}-[A-Z0-9]{3})\b", text):
+        code = _clean(match.group(1))
+        if code:
+            return code
     return None
 
 
@@ -2173,7 +2847,7 @@ def duckmail_get_oai_code(
             messages = get_messages(dev_token)
         except Exception as exc:
             if log_callback:
-                log_callback(f"[Debug] 鎷夊彇閭欢鍒楄〃澶辫触: {exc}")
+                log_callback(f"[Debug] 拉取邮件列表失败: {exc}")
             sleep_with_cancel(poll_interval, cancel_callback)
             continue
         for msg in messages:
@@ -2188,7 +2862,7 @@ def duckmail_get_oai_code(
                 detail = get_message_detail(dev_token, msg_id)
             except Exception as exc:
                 if log_callback:
-                    log_callback(f"[Debug] 鑾峰彇閭欢璇︽儏澶辫触: {exc}")
+                    log_callback(f"[Debug] 获取邮件详情失败: {exc}")
                 continue
             parts = []
             text_body = detail.get("text") or ""
@@ -2200,11 +2874,11 @@ def duckmail_get_oai_code(
             combined = "\n".join(parts)
             subject = detail.get("subject", "")
             if log_callback:
-                log_callback(f"[Debug] 鏀跺埌閭欢: {subject}")
+                log_callback(f"[Debug] 收到邮件: {subject}")
             code = extract_verification_code(combined, subject)
             if code:
                 if log_callback:
-                    log_callback(f"[*] 浠庨偖浠朵腑鎻愬彇鍒伴獙璇佺爜: {code}")
+                    log_callback(f"[*] 从邮件中提取到验证码: {code}")
                 return code
         sleep_with_cancel(poll_interval, cancel_callback)
     raise Exception(f"在 {timeout}s 内未收到验证码邮件")
@@ -2453,6 +3127,8 @@ def start_browser(log_callback=None):
         try:
             TabPool.init(create_browser_options, log_callback=log_callback)
             page = TabPool.get_tab()
+            attach_proxy_auth(page, log_callback=log_callback if attempt == 1 else None)
+            apply_page_fingerprint(page, log_callback=log_callback if attempt == 1 else None)
             if log_callback and attempt > 1:
                 log_callback(f"[*] 浏览器第 {attempt} 次启动成功")
             return TabPool.get_browser(), page
@@ -2625,9 +3301,9 @@ def fill_email_and_submit(timeout=15, log_callback=None, cancel_callback=None):
     check_timeout(time.time())
     email, dev_token = get_email_and_token()
     if not email or not dev_token:
-        raise Exception("鑾峰彇閭澶辫触")
+        raise Exception("获取邮箱失败")
     if log_callback:
-        log_callback(f"[*] 宸插垱寤洪偖绠? {email}")
+        log_callback(f"[*] 已创建邮箱: {email}")
     deadline = time.time() + timeout
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
@@ -2682,6 +3358,7 @@ return input.value;
             human_sleep(0.5, cancel_callback)
             continue
         human_sleep(0.8, cancel_callback)
+        issued_after = time.time()
         clicked = page.run_js(
             r"""
 function isVisible(node) {
@@ -2711,6 +3388,7 @@ return true;
             """
         )
         if clicked:
+            remember_email_issued_after(email, issued_after)
             if log_callback:
                 log_callback(f"[*] 已填写邮箱并点击注册: {email}")
             dump_state(page, "email-submitted")
@@ -2747,6 +3425,7 @@ return false;
     except Exception:
         mail_poll_interval = 3
 
+    issued_after = get_email_issued_after(email)
     code = get_oai_code(
         dev_token,
         email,
@@ -2755,6 +3434,7 @@ return false;
         log_callback=log_callback,
         cancel_callback=cancel_callback,
         resend_callback=_resend_code,
+        issued_after=issued_after,
     )
     if not code:
         raise Exception("获取验证码失败")
@@ -3743,7 +4423,7 @@ class GrokRegisterGUI:
         self.count_spinbox.grid(row=0, column=3, sticky=tk.W, padx=5)
         ttk.Label(config_frame, text="并发线程:").grid(row=1, column=2, sticky=tk.W, padx=10)
         self.thread_var = tk.StringVar(value=str(config.get("register_threads", 1)))
-        self.thread_spinbox = ttk.Spinbox(config_frame, from_=1, to=10, width=8, textvariable=self.thread_var)
+        self.thread_spinbox = ttk.Spinbox(config_frame, from_=1, to=MAX_REGISTER_THREADS, width=8, textvariable=self.thread_var)
         self.thread_spinbox.grid(row=1, column=3, sticky=tk.W, padx=5)
         self.nsfw_var = tk.BooleanVar(value=config.get("enable_nsfw", True))
         self.nsfw_check = ttk.Checkbutton(config_frame, text="注册后开启 NSFW", variable=self.nsfw_var)
@@ -3961,7 +4641,7 @@ class GrokRegisterGUI:
 - 本次要注册的总账号数
 
 7) 并发线程
-- 建议先 3-6 稳定后再升到 10
+- 上限 100；建议先 3-6 稳定后再升高，浏览器路径不要直接拉满
 
 8) 代理（可选）
 - 不填=直连
@@ -4068,7 +4748,7 @@ class GrokRegisterGUI:
         config["defaultDomains"] = self.default_domains_var.get().strip()
         config["hotmail_accounts_file"] = self.hotmail_accounts_file_var.get().strip() or "mail_credentials.txt"
         try:
-            config["register_threads"] = max(1, min(10, int(self.thread_var.get())))
+            config["register_threads"] = max(1, min(MAX_REGISTER_THREADS, int(self.thread_var.get())))
         except Exception:
             config["register_threads"] = 1
         raw_paths = [x.strip() for x in self.cloudflare_paths_var.get().split(",") if x.strip()]
@@ -4151,7 +4831,10 @@ class GrokRegisterGUI:
                 msg = str(mail_exc)
                 if email:
                     try:
-                        mark_error(email, reason=msg[:120])
+                        if should_persist_email_error(msg):
+                            mark_error(email, reason=msg[:120])
+                        else:
+                            release_email(email)
                     except Exception:
                         pass
                 if ("未收到验证码" in msg or "验证码" in msg) and mail_try < max_mail_retry:
@@ -4172,7 +4855,10 @@ class GrokRegisterGUI:
         except Exception as flow_exc:
             if email:
                 try:
-                    mark_error(email, reason=str(flow_exc)[:120])
+                    if should_persist_email_error(str(flow_exc)):
+                        mark_error(email, reason=str(flow_exc)[:120])
+                    else:
+                        release_email(email)
                 except Exception:
                     pass
             raise

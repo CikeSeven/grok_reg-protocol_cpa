@@ -10,6 +10,9 @@
 2. **协议优先的 CPA 导出**  
    注册拿到 SSO 后，优先用 **纯 HTTP PKCE authorization-code flow**（`curl_cffi` + `sso` cookie）铸造 CPA 用的 `xai-*.json`；协议失败默认不再回退旧 Device Flow，避免产出 `/models` 可用但 chat 403 的坏 token。
 
+3. **本地 WebUI 运维台**  
+   `uv run python -m webui` 启动 `http://127.0.0.1:8787`：注册控制、账号账本、CPA 管理、Hotmail 凭证、配置中心、任务日志。视觉风格参考 `gpt_oauth`，业务按本项目文件账本组织。
+
 ## 产物说明
 
 一条成功链路会产出两类凭证：
@@ -143,7 +146,7 @@ your@hotmail.com----mailPassword----xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx----0.AX
 - 默认先用原邮箱，后续用随机 plus alias（如 `name+k8s2p9qa@domain`）
 - 经 `outlook.office365.com`（可回退 `imap-mail.outlook.com`）XOAUTH2 IMAP 拉验证码
 - refresh_token 若轮换会**自动回写** `mail_credentials.txt`
-- 成功 / 失败 / 占用中的 alias 会参与去重与 `hotmail_max_aliases_per_account` 计数
+- 成功 / 明确邮箱凭证失败 / 占用中的 alias 会参与去重与 `hotmail_max_aliases_per_account` 计数；验证码等待超时、Turnstile/SSO 等流程失败只释放 alias，不再永久写入 `emails_error.txt`
 
 相关配置见 `config.example.json` 中 `hotmail_*` 注释键。
 
@@ -254,6 +257,33 @@ mise install
 mise run deps
 ```
 
+### WebUI 运维台
+
+```bash
+uv run python -m webui --host 127.0.0.1 --port 8787
+# 或
+mise run webui
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8787
+```
+
+页面：
+
+| 页面 | 作用 |
+|------|------|
+| 注册控制 | 启动/停止批量注册，看实时 stats 与日志 |
+| 账号账本 | 浏览/导出/删除 `accounts_cli.txt`，选中补 CPA |
+| CPA 管理 | 管理 `cpa_auths/xai-*.json`，补缺失 mint |
+| 邮箱凭证 | 导入/删除 Hotmail 四段凭证 |
+| 配置中心 | 编辑 `config.json` 常用项 |
+| 任务记录 | 右侧抽屉查看历史任务与停止 |
+
+WebUI **不另建数据库**，直接读写现有文件账本，与 CLI / ttk 共用数据。
+
 ### 验证环境
 
 ```bash
@@ -336,6 +366,12 @@ uv run python -u register_cli.py --extra 1 --threads 1
 # 再注册 5 个
 uv run python -u register_cli.py --extra 5 --threads 2
 
+# 纯协议注册拿 SSO（账号创建不走浏览器填表；Turnstile token 仍需 solver）
+uv run python -u register_cli.py --extra 1 --threads 1 --protocol
+
+# 只跑协议，失败不回退浏览器
+uv run python -u register_cli.py --extra 1 --threads 1 --protocol --protocol-no-browser-fallback
+
 # 无头注册 1 个账号（默认仍是有头；Turnstile 失败时改回有头）
 uv run python -u register_cli.py --extra 1 --threads 1 --headless-register
 
@@ -353,6 +389,22 @@ uv run python grok_register_ttk.py
 2. 可选：推 grok2api
 3. 若 `cpa_export_enabled`：协议 mint（失败则浏览器）→ `cpa_auths/xai-<email>.json`
 4. 若 `cpa_copy_to_hotload`：移动到 `cpa_hotload_dir`（不再保留 `cpa_auths` 中的副本）
+
+#### 协议注册说明
+
+`--protocol` 或 `config.json` 中 `"protocol_register": true` 会优先使用 `protocol_register.py`
+重放 `accounts.x.ai` 注册协议：gRPC-web 发码/验码、抓取 Next.js `next-action`、
+提交 `/sign-up`、访问返回的 `set-cookie` URL 并读取 `sso`。这条路径不打开注册浏览器；
+但 Cloudflare Turnstile 的 token 仍需 `yescaptcha_key`/`YESCAPTCHA_KEY`
+或本地 `protocol_solver_url` 提供。
+
+相关配置：`protocol_solver_url`、`protocol_solver_pass_proxy`、`protocol_solver_locale`、
+`protocol_solver_accept_language`、`protocol_solver_timezone`、`protocol_impersonate`、`turnstile_site_key`、
+`protocol_register_max_attempts`、`protocol_only`、`protocol_register_fallback_browser`。
+
+当 `protocol_solver_pass_proxy=true`（默认）时，协议注册会把本账号正在使用的
+注册代理一并传给本地 solver。WebUI 代理池随机模式下，每个账号的注册请求和
+Turnstile solver 会尽量使用同一个代理出口。
 
 ### B. 存量号补 CPA（只 mint，不重新注册）
 
@@ -425,8 +477,10 @@ curl -sS http://127.0.0.1:8317/v1/chat/completions \
 |------|------|--------|
 | `--extra N` | **再新注册 N 个**（推荐） | 0 |
 | `--count N` | 账号**总数目标**（含已有）；已达标则退出 | 1 |
-| `--threads N` | 注册并发线程数（1-10） | 1 |
+| `--threads N` | 注册并发线程数（1-100） | 1 |
 | `--accounts-file` | 账本路径 | `./accounts_cli.txt` |
+| `--protocol` | 注册阶段优先走纯 HTTP 协议路径拿 SSO | 关 |
+| `--protocol-no-browser-fallback` | 协议注册失败不回退浏览器 | 关 |
 | `--headless-register` | 注册浏览器使用无头模式 | 有头 |
 | `--headed-register` | 注册浏览器强制有头模式 | - |
 
@@ -434,7 +488,7 @@ curl -sS http://127.0.0.1:8317/v1/chat/completions \
 
 | 参数 | 含义 | 默认值 |
 |------|------|--------|
-| `--mint-workers N` | CPA mint 并发数：-1=用 config/auto；0=内联；1-10=固定 | -1（auto） |
+| `--mint-workers N` | CPA mint 并发数：-1=用 config/auto；0=内联；1-100=固定 | -1（auto） |
 | `--mint-queue-max N` | mint 队列背压上限：-1=用 config/auto(2×workers)；0=不限制 | -1 |
 | `--inline-mint` | 强制注册线程内联 mint（调试用） | 异步队列 |
 
@@ -456,6 +510,9 @@ uv run python -u register_cli.py --extra 1 --threads 1
 
 # 注册 5 个账号，并发 2
 uv run python -u register_cli.py --extra 5 --threads 2
+
+# 协议注册 1 个账号
+uv run python -u register_cli.py --extra 1 --threads 1 --protocol
 
 # 无头注册（默认仍建议有头，Turnstile 失败时去掉该参数）
 uv run python -u register_cli.py --extra 1 --threads 1 --headless-register

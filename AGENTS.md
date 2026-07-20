@@ -37,6 +37,20 @@ uv run python grok_register_ttk.py
 # 或 mise run gui / mise run register
 ```
 
+### WebUI 运维台
+
+```bash
+# 启动本地 WebUI（默认仅绑 127.0.0.1）
+uv run python -m webui --host 127.0.0.1 --port 8787
+# 或
+mise run webui
+```
+
+打开：`http://127.0.0.1:8787`
+
+能力：注册控制、账号账本、CPA 管理、Hotmail 凭证、配置中心、任务日志。
+数据仍读写现有文件（`config.json` / `accounts_cli.txt` / `mail_credentials.txt` / `cpa_auths/`）。
+
 ### 存量号补 CPA（只 mint，不重新注册）
 
 ```bash
@@ -63,6 +77,11 @@ curl -sS http://127.0.0.1:8317/v1/chat/completions \
 grok_reg-protocol_cpa/
 ├── register_cli.py           # CLI 批量注册入口
 ├── grok_register_ttk.py      # 浏览器注册核心（含 Hotmail/Outlook 邮箱）
+├── webui/                    # 本地运维 WebUI（FastAPI + 静态前端）
+│   ├── app.py                # API 路由
+│   ├── jobs.py               # 进程内注册 / 补 mint 任务
+│   ├── store.py              # 文件账本读写
+│   └── static/               # 前端页面
 ├── cpa_export.py             # 注册成功后的 CPA 导出 hook
 ├── cpa_xai/                  # OIDC/CPA 铸造模块
 │   ├── protocol_mint.py      # 纯 HTTP Device Flow（协议优先）

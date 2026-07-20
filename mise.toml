@@ -38,6 +38,11 @@ run = "uv run python -u register_cli.py --count 10"
 run = "uv run python grok_register_ttk.py"
 description = "启动原版 GUI（需桌面 X/Wayland 会话）"
 
+# ─── WebUI ───
+[tasks.webui]
+description = "启动本地运维 WebUI（默认 127.0.0.1:8787）"
+run = "uv run python -m webui --host 127.0.0.1 --port 8787"
+
 
 # ─── 邮箱调试 ───
 [tasks.mail-debug]

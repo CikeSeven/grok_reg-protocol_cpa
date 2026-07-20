@@ -115,6 +115,7 @@ def export_cpa_xai_for_account(
 
     try:
         from cpa_xai import mint_and_export  # type: ignore
+        from cpa_xai.proxyutil import proxy_log_label  # type: ignore
     except Exception as e:  # noqa: BLE001
         log(f"[cpa] import cpa_xai failed: {e}")
         return {"ok": False, "error": f"import: {e}"}
@@ -134,6 +135,13 @@ def export_cpa_xai_for_account(
 
     # Priority: cpa_proxy > proxy > env. Config must beat shell https_proxy.
     proxy = (cfg.get("cpa_proxy") or cfg.get("proxy") or "").strip()
+    if proxy:
+        try:
+            import proxy_pool
+
+            proxy = proxy_pool.resolve_special(proxy)  # pool:random 等配置特殊值
+        except Exception:
+            pass
     if not proxy:
         proxy = (
             os.environ.get("https_proxy")
@@ -166,6 +174,14 @@ def export_cpa_xai_for_account(
     protocol_poll_timeout = float(cfg.get("cpa_protocol_poll_timeout_sec", 90) or 90)
     allow_device_flow_fallback = bool(cfg.get("cpa_allow_device_flow_fallback", False))
     protocol_flow = str(cfg.get("cpa_protocol_flow") or "pkce").strip().lower()
+    try:
+        protocol_network_retries = int(cfg.get("cpa_pkce_network_retries", 1) or 0)
+    except (TypeError, ValueError):
+        protocol_network_retries = 1
+    try:
+        protocol_network_retry_delay = float(cfg.get("cpa_pkce_network_retry_delay_sec", 1.5) or 1.5)
+    except (TypeError, ValueError):
+        protocol_network_retry_delay = 1.5
 
     # cookies: explicit arg > page export > none
     use_cookies = cookies
@@ -204,7 +220,7 @@ def export_cpa_xai_for_account(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     log(
-        f"[cpa] mint OIDC for {email} -> {out_dir} proxy={proxy or '(none)'} "
+        f"[cpa] mint OIDC for {email} -> {out_dir} proxy={proxy_log_label(proxy) or '(none)'} "
         f"cookies={len(use_cookies) if isinstance(use_cookies, list) else (1 if use_cookies else 0)} "
         f"reuse={reuse_browser} protocol={prefer_protocol} flow={protocol_flow}"
         f"{' only' if protocol_only else ''} sso={'yes' if sso_val else 'no'}"
@@ -234,6 +250,8 @@ def export_cpa_xai_for_account(
         prefer_protocol=prefer_protocol,
         protocol_only=protocol_only,
         protocol_poll_timeout_sec=protocol_poll_timeout,
+        protocol_network_retries=protocol_network_retries,
+        protocol_network_retry_delay_sec=protocol_network_retry_delay,
         allow_device_flow_fallback=allow_device_flow_fallback,
         protocol_flow=protocol_flow,
         log=_log,

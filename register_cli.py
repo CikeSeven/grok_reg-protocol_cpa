@@ -28,6 +28,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import grok_register_ttk as reg  # noqa: E402
 
 
+MAX_REGISTER_THREADS = 100
+MAX_MINT_WORKERS = 100
+DEFAULT_THREAD_START_INTERVAL = 0.8
+
+
 # Linux 适配: DrissionPage 默认找 'chrome', 我们装的是 chromium
 # 保留原版 slim flags + proxy，再补 chromium 路径与 turnstilePatch。
 _orig_create_browser_options = reg.create_browser_options
@@ -103,6 +108,7 @@ def log(worker_id: int | str, msg: str) -> None:
 # ── 统计 ──
 
 _stats_lock = threading.Lock()
+_accounts_file_lock = threading.Lock()
 _stats = {
     "reg_success": 0,
     "reg_fail": 0,
@@ -115,6 +121,14 @@ _stats = {
 def _inc(key: str, n: int = 1) -> None:
     with _stats_lock:
         _stats[key] = _stats.get(key, 0) + n
+
+
+def append_account_record(accounts_file: str, email: str, password: str, sso: str) -> None:
+    """Append one successful account line under a process-local lock."""
+    line = f"{email}----{password}----{sso}\n"
+    with _accounts_file_lock:
+        with open(accounts_file, "a", encoding="utf-8") as f:
+            f.write(line)
 
 
 # forever 任务索引
@@ -141,14 +155,14 @@ def resolve_mint_workers(
     if inline_mint:
         return 0
     if cli_value >= 0:
-        return max(0, min(int(cli_value), 10))
+        return max(0, min(int(cli_value), MAX_MINT_WORKERS))
     cfg_v = config.get("cpa_mint_workers", -1)
     try:
         cfg_v = int(cfg_v)
     except Exception:
         cfg_v = -1
     if cfg_v >= 0:
-        return max(0, min(cfg_v, 10))
+        return max(0, min(cfg_v, MAX_MINT_WORKERS))
     # auto
     if config.get("cpa_export_enabled", True):
         return max(1, min(int(threads), 4))
@@ -168,6 +182,17 @@ def resolve_mint_queue_max(config: dict, mint_workers: int, cli_value: int | Non
     return max(0, mint_workers * 2) if mint_workers > 0 else 0
 
 
+def resolve_thread_start_interval(config: dict) -> float:
+    """Resolve worker start stagger seconds; negative values disable staggering."""
+    try:
+        interval = float(config.get("thread_start_interval", DEFAULT_THREAD_START_INTERVAL))
+    except Exception:
+        interval = DEFAULT_THREAD_START_INTERVAL
+    if interval < 0:
+        return 0.0
+    return interval
+
+
 class DummyStop:
     def __call__(self) -> bool:
         return False
@@ -182,13 +207,61 @@ def _is_hotmail_provider() -> bool:
 
 
 def _mark_email_stage_error(email: str, reason: str) -> None:
-    """Persist failed Hotmail/Outlook aliases so the next run does not reuse them."""
+    """Persist only hard Hotmail/Outlook mailbox failures; transient flow failures just release aliases."""
     if not email or not _is_hotmail_provider():
         return
     try:
-        reg.mark_error(email, reason=str(reason)[:120])
+        if reg.should_persist_email_error(reason):
+            reg.mark_error(email, reason=str(reason)[:120])
+        else:
+            reg.release_email(email)
     except Exception:
         pass
+
+
+def _use_protocol_register() -> bool:
+    """Whether the register worker should try pure HTTP protocol registration first."""
+    try:
+        if bool(getattr(register_one, "_force_protocol", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        if bool((getattr(reg, "config", {}) or {}).get("protocol_register", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        import protocol_register as prot
+
+        return bool(getattr(prot, "FORCE_PROTOCOL", False))
+    except Exception:
+        return False
+
+
+def _protocol_only() -> bool:
+    try:
+        if bool((getattr(reg, "config", {}) or {}).get("protocol_only", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        import protocol_register as prot
+
+        return bool(getattr(prot, "PROTOCOL_ONLY", False))
+    except Exception:
+        return False
+
+
+def _protocol_browser_fallback_enabled() -> bool:
+    try:
+        return bool(
+            (getattr(reg, "config", {}) or {}).get(
+                "protocol_register_fallback_browser", True
+            )
+        )
+    except Exception:
+        return True
 
 
 def _ensure_browser(worker_id: int, force_recycle: bool = False):
@@ -210,6 +283,7 @@ def register_one(
     *,
     do_mint_inline: bool = False,
     mint_queue: queue.Queue | None = None,
+    cancel_callback=None,
 ) -> dict | None:
     """Run one registration. Enqueue CPA mint (default) instead of blocking.
 
@@ -221,7 +295,75 @@ def register_one(
         max_mail_retry = max(1, int((getattr(reg, "config", {}) or {}).get("mail_retry_count", 3) or 3))
     except Exception:
         max_mail_retry = 3
-    cancel = DummyStop()
+    cancel = cancel_callback or DummyStop()
+
+    if _use_protocol_register():
+        log(worker_id, f"--- 第 {idx}/{total} 个账号 [PROTOCOL] ---")
+        try:
+            import protocol_register as prot
+
+            result = prot.register_one_protocol(
+                log=lambda m: log(worker_id, m),
+                cancel=cancel,
+            )
+        except Exception as exc:
+            log(worker_id, f"! 协议注册异常: {exc}")
+            traceback.print_exc()
+            _inc("reg_fail")
+            if _protocol_only() or not _protocol_browser_fallback_enabled():
+                return None
+            log(worker_id, "[protocol] 回退浏览器路径")
+        else:
+            if not result or not result.get("ok"):
+                log(worker_id, f"! 协议注册失败: {(result or {}).get('error')}")
+                _inc("reg_fail")
+                if _protocol_only() or not _protocol_browser_fallback_enabled():
+                    return None
+                log(worker_id, "[protocol] 回退浏览器路径")
+            else:
+                email = str(result.get("email") or "").strip()
+                password = str(result.get("password") or "").strip()
+                sso = str(result.get("sso") or "").strip()
+                profile = result.get("profile") or {"password": password}
+                cookies = result.get("cookies") or []
+                if not email or not password or not sso:
+                    log(worker_id, "! 协议注册结果缺少 email/password/sso")
+                    _inc("reg_fail")
+                    return None
+                append_account_record(accounts_file, email, password, sso)
+                log(worker_id, f"+ 协议注册成功: {email}")
+                try:
+                    reg.mark_used(email, password)
+                except Exception:
+                    pass
+                try:
+                    reg.add_token_to_grok2api_pools(
+                        sso, email=email, log_callback=lambda m: log(worker_id, m)
+                    )
+                except Exception as exc:
+                    log(worker_id, f"[Debug] grok2api: {exc}")
+
+                job = {
+                    "email": email,
+                    "password": password,
+                    "sso": sso,
+                    "profile": profile,
+                    "idx": idx,
+                    "cookies": cookies,
+                }
+                if do_mint_inline:
+                    _run_mint_job(f"R{worker_id}", job, getattr(reg, "config", {}) or {})
+                elif mint_queue is not None:
+                    qmax = int(getattr(mint_queue, "_reg_qmax", 0) or 0)
+                    while qmax > 0 and mint_queue.qsize() >= qmax:
+                        log(worker_id, f"[cpa] mint 队列背压 qsize={mint_queue.qsize()}≥{qmax}，等待...")
+                        time.sleep(1.0)
+                    mint_queue.put(job)
+                    log(worker_id, f"[cpa] enqueued mint for {email} (queue≈{mint_queue.qsize()})")
+                else:
+                    log(worker_id, "[cpa] mint skipped (no queue / inline)")
+                _inc("reg_success")
+                return job
 
     try:
         _ensure_browser(worker_id, force_recycle=False)
@@ -282,9 +424,7 @@ def register_one(
             log_callback=lambda m: log(worker_id, m), cancel_callback=cancel
         )
         password = profile.get("password", "") or ""
-        line = f"{email}----{password}----{sso}\n"
-        with open(accounts_file, "a", encoding="utf-8") as f:
-            f.write(line)
+        append_account_record(accounts_file, email, password, sso)
         log(worker_id, f"+ 注册成功: {email}")
         reg.mark_used(email, password)
 
@@ -347,7 +487,7 @@ def register_one(
         return job
     except Exception as exc:
         log(worker_id, f"! 注册失败: {exc}")
-        reg.mark_error(email or "", reason=str(exc)[:120])
+        _mark_email_stage_error(email or "", str(exc))
         traceback.print_exc()
         _inc("reg_fail")
         try:
@@ -408,12 +548,19 @@ def _register_worker(
     mint_queue: queue.Queue | None,
     forever: bool,
     do_mint_inline: bool,
+    cancel_callback=None,
 ):
     while True:
+        if cancel_callback and cancel_callback():
+            log(worker_id, "register worker cancelled")
+            break
         try:
             idx = task_queue.get_nowait()
         except queue.Empty:
             if not forever:
+                break
+            if cancel_callback and cancel_callback():
+                log(worker_id, "register worker cancelled")
                 break
             with _next_idx_lock:
                 nxt = _next_idx[0]
@@ -424,6 +571,13 @@ def _register_worker(
 
         retry = 0
         while retry < 2:
+            if cancel_callback and cancel_callback():
+                log(worker_id, "register worker cancelled mid-task")
+                try:
+                    reg.stop_browser()
+                except Exception:
+                    pass
+                return
             try:
                 result = register_one(
                     worker_id,
@@ -432,14 +586,26 @@ def _register_worker(
                     accounts_file,
                     do_mint_inline=do_mint_inline,
                     mint_queue=mint_queue,
+                    cancel_callback=cancel_callback,
                 )
+                if cancel_callback and cancel_callback():
+                    log(worker_id, "register worker cancelled after task")
+                    return
                 if result:
                     break
                 retry += 1
                 if retry < 2:
                     log(worker_id, f"[retry] 账号 {idx} 失败，重试 {retry}/1")
+                    # 停止时不要为了“重试”再启动浏览器。协议注册被取消后
+                    # register_one() 会返回 None；旧逻辑会让大量 worker 同时
+                    # restart_browser()，这就是 100 并发点停止后 CPU/内存飙升
+                    # 的主要放大点。
+                    if cancel_callback and cancel_callback():
+                        log(worker_id, "register worker cancelled before retry")
+                        return
                     try:
-                        reg.restart_browser(log_callback=lambda m: log(worker_id, m))
+                        if not _use_protocol_register():
+                            reg.restart_browser(log_callback=lambda m: log(worker_id, m))
                     except Exception:
                         pass
             except Exception:
@@ -447,8 +613,12 @@ def _register_worker(
                 if retry < 2:
                     log(worker_id, f"[retry] 账号 {idx} 异常，重试 {retry}/1")
                     traceback.print_exc()
+                    if cancel_callback and cancel_callback():
+                        log(worker_id, "register worker cancelled before retry")
+                        return
                     try:
-                        reg.restart_browser(log_callback=lambda m: log(worker_id, m))
+                        if not _use_protocol_register():
+                            reg.restart_browser(log_callback=lambda m: log(worker_id, m))
                     except Exception:
                         pass
 
@@ -493,12 +663,12 @@ def main() -> int:
         default=0,
         help="在已有 accounts 基础上再新注册 N 个",
     )
-    parser.add_argument("--threads", type=int, default=1, help="注册并发线程数（1-10）")
+    parser.add_argument("--threads", type=int, default=1, help="注册并发线程数（1-100）")
     parser.add_argument(
         "--mint-workers",
         type=int,
         default=-1,
-        help="CPA mint 并发：-1=用 config/auto；0=内联；1-10=固定。覆盖 config.cpa_mint_workers",
+        help="CPA mint 并发：-1=用 config/auto；0=内联；1-100=固定。覆盖 config.cpa_mint_workers",
     )
     parser.add_argument(
         "--mint-queue-max",
@@ -514,6 +684,16 @@ def main() -> int:
     parser.add_argument("--cookie-snapshot", action="store_true", help="注册成功写 cookie 快照（默认关，fast）")
     parser.add_argument("--inline-mint", action="store_true", help="强制注册线程内联 mint（调试用）")
     parser.add_argument(
+        "--protocol",
+        action="store_true",
+        help="注册阶段优先走纯 HTTP 协议路径拿 SSO（失败可按配置回退浏览器）",
+    )
+    parser.add_argument(
+        "--protocol-no-browser-fallback",
+        action="store_true",
+        help="协议注册失败时不要回退浏览器路径",
+    )
+    parser.add_argument(
         "--headless-register",
         action="store_true",
         help="注册浏览器使用无头模式（默认由 config.register_headless 决定）",
@@ -527,6 +707,26 @@ def main() -> int:
 
     reg.load_config()
     cfg0 = getattr(reg, "config", {}) or {}
+    if not args.protocol and bool(cfg0.get("protocol_register", False)):
+        args.protocol = True
+    if args.protocol:
+        try:
+            import protocol_register as prot
+
+            prot.FORCE_PROTOCOL = True
+            cfg0["protocol_register"] = True
+            if args.protocol_no_browser_fallback:
+                prot.PROTOCOL_ONLY = True
+                cfg0["protocol_only"] = True
+                cfg0["protocol_register_fallback_browser"] = False
+            print(
+                f"[*] 协议注册模式开启 email_provider={cfg0.get('email_provider')} "
+                f"solver={cfg0.get('protocol_solver_url') or 'http://127.0.0.1:5072'}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"[!] 协议注册模块加载失败: {exc}", flush=True)
+            return 2
     if args.headless_register and args.headed_register:
         print("[!] --headless-register 与 --headed-register 不能同时使用", flush=True)
         return 2
@@ -534,7 +734,7 @@ def main() -> int:
         cfg0["register_headless"] = True
     elif args.headed_register:
         cfg0["register_headless"] = False
-    threads = max(1, min(args.threads, 10))
+    threads = max(1, min(args.threads, MAX_REGISTER_THREADS))
     fast = bool(args.fast) and not bool(args.no_fast)
 
     mint_workers = resolve_mint_workers(
@@ -573,7 +773,8 @@ def main() -> int:
         print(
             f"[*] 配置加载完成，额外新注册 {args.extra} 个（当前已有 {done_count} → 目标 {target_total}），"
             f"注册线程={threads} mint_workers={mint_workers} mint_queue_max={mint_qmax} "
-            f"fast={fast} register_headless={bool(cfg0.get('register_headless', False))}",
+            f"fast={fast} protocol_register={bool(cfg0.get('protocol_register', False))} "
+            f"register_headless={bool(cfg0.get('register_headless', False))}",
             flush=True,
         )
         args.count = target_total
@@ -582,6 +783,7 @@ def main() -> int:
         print(
             f"[*] 配置加载完成，不限数量，注册线程={threads} mint_workers={mint_workers} "
             f"mint_queue_max={mint_qmax} fast={fast} "
+            f"protocol_register={bool(cfg0.get('protocol_register', False))} "
             f"register_headless={bool(cfg0.get('register_headless', False))}",
             flush=True,
         )
@@ -590,7 +792,8 @@ def main() -> int:
         print(
             f"[*] 配置加载完成，目标 {args.count} 个账号，注册线程={threads} "
             f"mint_workers={mint_workers} mint_queue_max={mint_qmax} "
-            f"fast={fast} register_headless={bool(cfg0.get('register_headless', False))}",
+            f"fast={fast} protocol_register={bool(cfg0.get('protocol_register', False))} "
+            f"register_headless={bool(cfg0.get('register_headless', False))}",
             flush=True,
         )
     print(f"[*] accounts_file = {args.accounts_file}", flush=True)
@@ -609,11 +812,12 @@ def main() -> int:
     log_thread = threading.Thread(target=_log_writer, daemon=True)
     log_thread.start()
 
-    try:
-        reg.TabPool.init(reg.create_browser_options, log_callback=lambda m: log(0, m))
-    except Exception as exc:
-        print(f"[!] 浏览器初始化失败: {exc}", flush=True)
-        return 1
+    if not _use_protocol_register():
+        try:
+            reg.TabPool.init(reg.create_browser_options, log_callback=lambda m: log(0, m))
+        except Exception as exc:
+            print(f"[!] 浏览器初始化失败: {exc}", flush=True)
+            return 1
 
     task_queue: queue.Queue = queue.Queue()
     mint_queue: queue.Queue | None = queue.Queue() if not do_mint_inline else None
@@ -646,6 +850,7 @@ def main() -> int:
             t.start()
             mint_threads.append(t)
 
+    start_interval = resolve_thread_start_interval(cfg0)
     reg_threads: list[threading.Thread] = []
     for wid in range(1, threads + 1):
         t = threading.Thread(
@@ -656,6 +861,8 @@ def main() -> int:
         )
         t.start()
         reg_threads.append(t)
+        if wid < threads and start_interval > 0:
+            time.sleep(start_interval)
 
     try:
         for t in reg_threads:

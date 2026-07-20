@@ -1,0 +1,909 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Grok Reg Console</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="grad-accent" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#7c5cf0"/><stop offset="1" stop-color="#0ea5e9"/>
+      </linearGradient>
+    </defs>
+    <symbol id="i-console" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6M12 19h8"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-7.7L3 7M3 3v4h4M12 7v5l4 2"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m6 4 14 8-14 8z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-15.64-6.13L3 8M3 3v5h5M3 12a9 9 0 0 0 15.64 6.13L21 16M16 16h5v5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-chev-l" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5zM3 8l9 5m0 0 9-5m-9 5v8"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-arrow-r" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8m8 4H8m2-8H8"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24"><path d="M8 3 4 7l4 4M4 7h16m-4 10 4-4-4-4m4 4H4"/></symbol>
+  </svg>
+
+  <div class="app">
+    <!-- ══════════ Sidebar ══════════ -->
+    <aside class="side">
+      <div class="brand">
+        <span class="brand-mark">G</span>
+        <span class="brand-text">
+          <strong>GROK REG</strong>
+          <small>OPS CONSOLE</small>
+        </span>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-view="console" type="button">
+          <svg><use href="#i-console"/></svg><span>注册控制台</span>
+        </button>
+        <button class="nav-item" data-view="accounts" type="button">
+          <svg><use href="#i-users"/></svg><span>账号账本</span>
+          <em class="nav-count" id="nav-accounts-count" hidden></em>
+        </button>
+        <button class="nav-item" data-view="cpa" type="button">
+          <svg><use href="#i-key"/></svg><span>CPA 文件</span>
+          <em class="nav-count" id="nav-cpa-count" hidden></em>
+        </button>
+        <button class="nav-item" data-view="mail" type="button">
+          <svg><use href="#i-mail"/></svg><span>邮箱凭证</span>
+          <em class="nav-count" id="nav-mail-count" hidden></em>
+        </button>
+        <button class="nav-item" data-view="proxies" type="button">
+          <svg><use href="#i-server"/></svg><span>代理池</span>
+          <em class="nav-count" id="nav-proxies-count" hidden></em>
+        </button>
+        <button class="nav-item" data-view="tools" type="button">
+          <svg><use href="#i-wrench"/></svg><span>工具</span>
+        </button>
+        <button class="nav-item" data-view="settings" type="button">
+          <svg><use href="#i-settings"/></svg><span>配置中心</span>
+        </button>
+      </nav>
+
+      <div class="side-foot">
+        <button class="nav-item" id="open-jobs" type="button">
+          <svg><use href="#i-history"/></svg><span>任务记录</span>
+          <em class="nav-count pulse" id="nav-jobs-active" hidden></em>
+        </button>
+        <div class="side-status">
+          <span class="live-dot"></span>
+          <span id="side-status-text">本地服务在线</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ══════════ Workspace ══════════ -->
+    <main class="workspace">
+
+      <!-- ── Console view ── -->
+      <section class="view" data-view-panel="console">
+        <header class="topbar">
+          <div class="topbar-title">
+            <p class="eyebrow">REGISTER PIPELINE</p>
+            <h1>注册控制台</h1>
+          </div>
+          <div class="top-actions">
+            <button class="btn ghost" id="refresh-overview" type="button">
+              <svg><use href="#i-refresh"/></svg>刷新
+            </button>
+            <button class="btn danger" id="stop-active-job" type="button" disabled>
+              <svg><use href="#i-stop"/></svg>停止任务
+            </button>
+            <button class="btn primary" id="start-register" type="button">
+              <svg><use href="#i-play"/></svg>启动注册
+            </button>
+          </div>
+        </header>
+
+        <!-- KPI cards -->
+        <div class="kpis">
+          <div class="kpi">
+            <span class="kpi-label">账号总数</span>
+            <strong class="kpi-value" id="m-accounts">0</strong>
+            <span class="kpi-sub">accounts_cli.txt</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">含 SSO</span>
+            <strong class="kpi-value" id="m-sso">0</strong>
+            <span class="kpi-sub">注册成功</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">CPA 就绪</span>
+            <strong class="kpi-value ok" id="m-cpa">0</strong>
+            <span class="kpi-sub">可免费 Grok 4.5</span>
+          </div>
+          <div class="kpi warn">
+            <span class="kpi-label">仅 SSO 待补</span>
+            <strong class="kpi-value" id="m-sso-only">0</strong>
+            <span class="kpi-sub">需补 mint</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">热加载</span>
+            <strong class="kpi-value accent" id="m-hotload">0</strong>
+            <span class="kpi-sub">CLIProxyAPI</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">邮箱凭证</span>
+            <strong class="kpi-value" id="m-mail">0</strong>
+            <span class="kpi-sub" id="m-provider">-</span>
+          </div>
+        </div>
+
+        <!-- Real pipeline -->
+        <div class="panel pipeline-panel">
+          <div class="pipeline" id="pipeline">
+            <div class="pstep" data-step="mail">
+              <span class="pstep-dot"><svg><use href="#i-mail"/></svg></span>
+              <div class="pstep-text"><strong>邮箱凭证</strong><small>Hotmail / Outlook</small></div>
+              <span class="pstep-value" id="pv-mail">0</span>
+            </div>
+            <span class="pstep-link"></span>
+            <div class="pstep" data-step="register">
+              <span class="pstep-dot"><svg><use href="#i-console"/></svg></span>
+              <div class="pstep-text"><strong>浏览器注册</strong><small>Turnstile + 资料</small></div>
+              <span class="pstep-value" id="pv-register">0</span>
+            </div>
+            <span class="pstep-link"></span>
+            <div class="pstep" data-step="sso">
+              <span class="pstep-dot"><svg><use href="#i-shield"/></svg></span>
+              <div class="pstep-text"><strong>SSO Cookie</strong><small>写入账本</small></div>
+              <span class="pstep-value" id="pv-sso">0</span>
+            </div>
+            <span class="pstep-link"></span>
+            <div class="pstep" data-step="mint">
+              <span class="pstep-dot"><svg><use href="#i-zap"/></svg></span>
+              <div class="pstep-text"><strong>协议 Mint</strong><small id="pv-flow">PKCE</small></div>
+              <span class="pstep-value" id="pv-mint">-</span>
+            </div>
+            <span class="pstep-link"></span>
+            <div class="pstep" data-step="cpa">
+              <span class="pstep-dot"><svg><use href="#i-key"/></svg></span>
+              <div class="pstep-text"><strong>CPA 写出</strong><small>xai-*.json</small></div>
+              <span class="pstep-value" id="pv-cpa">0</span>
+            </div>
+            <span class="pstep-link"></span>
+            <div class="pstep" data-step="hotload">
+              <span class="pstep-dot"><svg><use href="#i-server"/></svg></span>
+              <div class="pstep-text"><strong>热加载</strong><small>~/.cli-proxy-api</small></div>
+              <span class="pstep-value" id="pv-hotload">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Launch + active job -->
+        <div class="console-grid">
+          <div class="panel">
+            <div class="panel-head">
+              <h2><svg><use href="#i-play"/></svg>启动参数</h2>
+              <span class="chip" id="provider-chip">provider: -</span>
+            </div>
+            <div class="panel-body">
+              <div class="form-grid">
+                <label class="field">
+                  <span>新增数量 <em>extra</em></span>
+                  <input id="reg-extra" type="number" min="1" max="1000" value="1">
+                </label>
+                <label class="field">
+                  <span>注册线程 <em>1-100</em></span>
+                  <input id="reg-threads" type="number" min="1" max="100" value="1">
+                </label>
+                <label class="field">
+                  <span>Mint workers <em>-1 自动 / 0 内联</em></span>
+                  <input id="reg-mint-workers" type="number" min="-1" max="100" value="-1">
+                </label>
+                <label class="field">
+                  <span>Mint 队列上限 <em>-1 配置 / 0 不限</em></span>
+                  <input id="reg-mint-queue-max" type="number" min="-1" max="1000" value="-1">
+                </label>
+                <label class="field">
+                  <span>代理模式 <em>任务级</em></span>
+                  <select id="reg-proxy-mode" class="select wide">
+                    <option value="config">跟随配置（config.json）</option>
+                    <option value="fixed">固定代理（池中单选）</option>
+                    <option value="random">随机轮换（每账号随机）</option>
+                  </select>
+                </label>
+                <label class="field" id="reg-proxy-fixed-wrap" hidden>
+                  <span>固定代理 <em>来自代理池</em></span>
+                  <select id="reg-proxy-fixed" class="select wide"></select>
+                </label>
+                <div class="field toggles">
+                  <label class="switch-row">
+                    <span>无头注册</span>
+                    <span class="switch"><input id="reg-headless" type="checkbox"><i></i></span>
+                  </label>
+                  <label class="switch-row">
+                    <span>快速模式</span>
+                    <span class="switch"><input id="reg-fast" type="checkbox" checked><i></i></span>
+                  </label>
+                  <label class="switch-row">
+                    <span>协议注册</span>
+                    <span class="switch"><input id="reg-protocol" type="checkbox"><i></i></span>
+                  </label>
+                  <label class="switch-row">
+                    <span>协议失败不回退浏览器</span>
+                    <span class="switch"><input id="reg-protocol-only" type="checkbox"><i></i></span>
+                  </label>
+                </div>
+              </div>
+              <p class="hint">在现有 <code>accounts_cli.txt</code> 基础上再注册 N 个；「协议注册」会用 curl_cffi 重放注册协议拿 SSO，但 Turnstile token 仍需 solver；注册成功即入队协议 mint（PKCE 优先）。</p>
+              <div class="meta-chips">
+                <span class="chip">代理 <b id="meta-proxy">-</b></span>
+                <span class="chip">CPA 代理 <b id="meta-cpa-proxy">-</b></span>
+                <span class="chip">注册 <b id="meta-register-mode">browser</b></span>
+                <span class="chip">协议 <b id="meta-protocol">pkce</b></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2><svg><use href="#i-zap"/></svg>当前任务</h2>
+              <span class="pill idle" id="active-job-status">空闲</span>
+            </div>
+            <div class="panel-body" id="active-job-body">
+              <div class="job-idle" id="active-job-idle">
+                <svg><use href="#i-box"/></svg>
+                <p>暂无运行中的任务</p>
+                <span>配置左侧参数后点击「启动注册」</span>
+              </div>
+              <div class="job-active" id="active-job-detail" hidden>
+                <div class="job-meta-line">
+                  <span class="chip mono" id="active-job-id">-</span>
+                  <span class="chip" id="active-job-kind">-</span>
+                  <span class="chip" id="active-job-elapsed">00:00</span>
+                </div>
+                <div class="job-stats" id="active-job-stats"></div>
+                <div class="progress">
+                  <div class="progress-bar" id="active-job-progress"></div>
+                </div>
+                <div class="progress-label"><span id="active-job-progress-text">0%</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live log -->
+        <div class="panel log-wrap">
+          <div class="panel-head">
+            <h2><svg><use href="#i-console"/></svg>实时日志</h2>
+            <div class="log-tools">
+              <label class="switch-row slim"><span>自动滚动</span>
+                <span class="switch"><input id="log-autoscroll" type="checkbox" checked><i></i></span>
+              </label>
+              <button class="btn ghost sm" id="clear-log" type="button">清空视图</button>
+            </div>
+          </div>
+          <div class="log-panel" id="live-log">
+            <div class="log-line dim">// 等待任务启动，日志将实时输出在这里</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Accounts view ── -->
+      <section class="view" data-view-panel="accounts" hidden>
+        <header class="topbar">
+          <div class="topbar-title">
+            <p class="eyebrow">LEDGER</p>
+            <h1>账号账本</h1>
+          </div>
+          <div class="top-actions">
+            <button class="btn ghost" id="export-accounts" type="button">
+              <svg><use href="#i-download"/></svg>导出
+            </button>
+            <button class="btn primary" id="refresh-accounts" type="button">
+              <svg><use href="#i-refresh"/></svg>刷新
+            </button>
+          </div>
+        </header>
+
+        <div class="panel">
+          <div class="toolbar">
+            <div class="search">
+              <svg><use href="#i-search"/></svg>
+              <input id="account-search" type="search" placeholder="搜索邮箱…" autocomplete="off">
+            </div>
+            <select id="account-status" class="select">
+              <option value="all">全部状态</option>
+              <option value="ready">就绪 (SSO+CPA)</option>
+              <option value="sso_only">仅 SSO</option>
+              <option value="incomplete">不完整</option>
+            </select>
+            <select id="account-select-by-status" class="select" title="按状态全选（跨页）">
+              <option value="">选择全部…</option>
+              <option value="ready">全部就绪账号</option>
+              <option value="sso_only">全部仅 SSO</option>
+              <option value="incomplete">全部不完整</option>
+            </select>
+            <div class="seg">
+              <button type="button" data-acc-select="page">本页全部</button>
+              <button type="button" data-acc-select="clear">清空选择</button>
+            </div>
+          </div>
+          <div class="batchbar" id="account-batch">
+            <span>已选 <b id="account-selected-count">0</b> 项</span>
+            <span class="vsep"></span>
+            <label class="batch-field">补CPA并发
+              <input id="account-backfill-workers" type="number" min="-1" max="20" value="4" title="-1=使用 cpa_mint_workers(最高8)/自动；建议 4-8">
+            </label>
+            <label class="batch-check">
+              <input id="account-backfill-probe-chat" type="checkbox">
+              probe chat
+            </label>
+            <button class="link" id="backfill-selected" type="button">补 CPA</button>
+            <button class="link" id="export-selected-accounts" type="button">导出选中</button>
+            <button class="link danger" id="delete-accounts" type="button">删除</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="c-check"><input id="account-select-all" type="checkbox" aria-label="全选"></th>
+                  <th>账号</th>
+                  <th>SSO</th>
+                  <th>状态</th>
+                  <th>CPA</th>
+                  <th>Mint 方法</th>
+                  <th>CPA 位置</th>
+                </tr>
+              </thead>
+              <tbody id="account-rows"></tbody>
+            </table>
+            <div class="empty" id="account-empty" hidden>
+              <svg><use href="#i-users"/></svg>
+              <strong>暂无账号</strong>
+              <span>前往「注册控制台」启动批量注册</span>
+            </div>
+          </div>
+          <footer class="table-foot">
+            <span id="account-count">共 0 个账号</span>
+            <div class="pager">
+              <button class="icon-btn" id="account-prev" type="button" aria-label="上一页"><svg><use href="#i-chev-l"/></svg></button>
+              <span id="account-page-label">1 / 1</span>
+              <button class="icon-btn" id="account-next" type="button" aria-label="下一页"><svg><use href="#i-chev-r"/></svg></button>
+              <input class="page-jump" id="account-page-jump" type="number" min="1" placeholder="页码" title="输入页码回车跳转">
+            </div>
+          </footer>
+        </div>
+      </section>
+
+      <!-- ── CPA view ── -->
+      <section class="view" data-view-panel="cpa" hidden>
+        <header class="topbar">
+          <div class="topbar-title">
+            <p class="eyebrow">OIDC / PKCE MINT</p>
+            <h1>CPA 文件</h1>
+          </div>
+          <div class="top-actions">
+            <label class="top-inline">补CPA并发
+              <input id="cpa-backfill-workers" type="number" min="-1" max="20" value="4" title="-1=使用 cpa_mint_workers(最高8)/自动；建议 4-8">
+            </label>
+            <label class="top-inline check">
+              <input id="cpa-backfill-probe-chat" type="checkbox">
+              probe chat
+            </label>
+            <button class="btn ghost" id="backfill-missing" type="button">
+              <svg><use href="#i-zap"/></svg>补缺失 CPA
+            </button>
+            <button class="btn primary" id="refresh-cpa" type="button">
+              <svg><use href="#i-refresh"/></svg>刷新
+            </button>
+          </div>
+        </header>
+
+        <div class="panel pool-panel">
+          <div class="panel-head">
+            <h2><svg><use href="#i-shield"/></svg>CPA 号池巡检</h2>
+            <span class="pill idle" id="cpa-pool-state">未巡检</span>
+          </div>
+          <div class="panel-body">
+            <div class="pool-kpis">
+              <div class="pool-kpi"><span>文件总数</span><b id="cpa-pool-total">0</b></div>
+              <div class="pool-kpi ok"><span>可用</span><b id="cpa-pool-ok">0</b></div>
+              <div class="pool-kpi warn"><span>额度/冷却</span><b id="cpa-pool-quota">0</b></div>
+              <div class="pool-kpi err"><span>异常</span><b id="cpa-pool-bad">0</b></div>
+              <div class="pool-kpi accent"><span>本轮续期</span><b id="cpa-pool-refreshed">0</b></div>
+              <div class="pool-kpi"><span>已巡检</span><b id="cpa-pool-results">0</b></div>
+              <div class="pool-kpi warn"><span>隔离区</span><b id="cpa-pool-quarantine">0</b></div>
+            </div>
+            <div class="pool-actions">
+              <label class="top-inline">并发
+                <input id="cpa-pool-workers" type="number" min="1" max="100" value="16">
+              </label>
+              <label class="top-inline">单次上限
+                <input id="cpa-pool-limit" type="number" min="0" max="100000" value="0" title="0=全量">
+              </label>
+              <label class="top-inline check">
+                <input id="cpa-pool-refresh-before" type="checkbox" checked>
+                临期续期
+              </label>
+              <label class="top-inline check">
+                <input id="cpa-pool-probe-chat" type="checkbox">
+                probe chat
+              </label>
+              <label class="top-inline check">
+                <input id="cpa-pool-apply-policy" type="checkbox">
+                自动治理
+              </label>
+              <button class="btn primary" id="cpa-pool-scan" type="button">
+                <svg><use href="#i-play"/></svg>立即巡检
+              </button>
+              <button class="btn danger" id="cpa-pool-stop" type="button" disabled>
+                <svg><use href="#i-stop"/></svg>停止
+              </button>
+              <button class="btn ghost" id="cpa-pool-refresh-status" type="button">
+                <svg><use href="#i-refresh"/></svg>刷新巡检状态
+              </button>
+            </div>
+            <div class="progress pool-progress"><div class="progress-bar" id="cpa-pool-progress"></div></div>
+            <p class="hint" id="cpa-pool-meta">建议：常规巡检只开 <code>models</code>，需要确认真实对话能力时再临时打开 <code>probe chat</code>。</p>
+            <div class="log-panel pool-log" id="cpa-pool-log"><div class="log-line dim">// 等待巡检</div></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="toolbar">
+            <div class="search">
+              <svg><use href="#i-search"/></svg>
+              <input id="cpa-search" type="search" placeholder="搜索邮箱 / 方法 / 位置…" autocomplete="off">
+            </div>
+            <div class="seg">
+              <button type="button" data-cpa-select="page">本页全部</button>
+              <button type="button" data-cpa-select="clear">清空选择</button>
+            </div>
+            <span class="hint" id="cpa-dirs"></span>
+          </div>
+          <div class="batchbar" id="cpa-batch">
+            <span>已选 <b id="cpa-selected-count">0</b> 项</span>
+            <span class="vsep"></span>
+            <button class="link" id="cpa-action-disable" type="button">禁用</button>
+            <button class="link" id="cpa-action-enable" type="button">启用</button>
+            <button class="link danger" id="cpa-action-quarantine" type="button">隔离</button>
+            <button class="link danger" id="delete-cpa" type="button">删除</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="c-check"><input id="cpa-select-all" type="checkbox" aria-label="全选"></th>
+                  <th>邮箱</th>
+                  <th>Mint 方法</th>
+                  <th>位置</th>
+                  <th>巡检</th>
+                  <th>到期</th>
+                  <th>更新时间</th>
+                  <th class="c-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="cpa-rows"></tbody>
+            </table>
+            <div class="empty" id="cpa-empty" hidden>
+              <svg><use href="#i-key"/></svg>
+              <strong>暂无 CPA 文件</strong>
+              <span>注册成功后自动写出 xai-*.json，也可点击「补缺失 CPA」</span>
+            </div>
+          </div>
+          <footer class="table-foot">
+            <span id="cpa-count">共 0 个文件</span>
+            <div class="pager">
+              <button class="icon-btn" id="cpa-prev" type="button" aria-label="上一页"><svg><use href="#i-chev-l"/></svg></button>
+              <span id="cpa-page-label">1 / 1</span>
+              <button class="icon-btn" id="cpa-next" type="button" aria-label="下一页"><svg><use href="#i-chev-r"/></svg></button>
+              <input class="page-jump" id="cpa-page-jump" type="number" min="1" placeholder="页码" title="输入页码回车跳转">
+            </div>
+          </footer>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2><svg><use href="#i-box"/></svg>隔离区</h2>
+            <span class="hint" id="cpa-quarantine-dir">-</span>
+          </div>
+          <div class="toolbar">
+            <div class="search">
+              <svg><use href="#i-search"/></svg>
+              <input id="cpa-quarantine-search" type="search" placeholder="搜索隔离邮箱 / 分组…" autocomplete="off">
+            </div>
+            <select id="cpa-quarantine-bucket" class="select">
+              <option value="all">全部分组</option>
+              <option value="hard_bad">硬坏</option>
+              <option value="refresh_failed">续期失败</option>
+              <option value="invalid">无效文件</option>
+              <option value="no_grok45">无 4.5</option>
+              <option value="manual">手动隔离</option>
+              <option value="deleted">已删除</option>
+            </select>
+            <button class="btn ghost" id="refresh-cpa-quarantine" type="button">
+              <svg><use href="#i-refresh"/></svg>刷新隔离区
+            </button>
+            <button class="btn primary" id="restore-cpa-quarantine" type="button">
+              <svg><use href="#i-arrow-r"/></svg>恢复选中
+            </button>
+          </div>
+          <div class="batchbar active">
+            <span>隔离区已选 <b id="cpa-quarantine-selected-count">0</b> 项</span>
+            <span class="vsep"></span>
+            <label class="batch-check"><input id="cpa-quarantine-overwrite" type="checkbox"> 覆盖已存在活动文件</label>
+          </div>
+          <div class="table-wrap quarantine-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="c-check"><input id="cpa-quarantine-select-all" type="checkbox" aria-label="全选隔离区"></th>
+                  <th>邮箱</th>
+                  <th>分组</th>
+                  <th>原路径/原因</th>
+                  <th>隔离时间</th>
+                </tr>
+              </thead>
+              <tbody id="cpa-quarantine-rows"></tbody>
+            </table>
+            <div class="empty" id="cpa-quarantine-empty" hidden>
+              <svg><use href="#i-box"/></svg>
+              <strong>隔离区为空</strong>
+              <span>自动治理或手动隔离后会显示在这里</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Mail view ── -->
+      <section class="view" data-view-panel="mail" hidden>
+        <header class="topbar">
+          <div class="topbar-title">
+            <p class="eyebrow">HOTMAIL / OUTLOOK</p>
+            <h1>邮箱凭证</h1>
+          </div>
+          <div class="top-actions">
+            <button class="btn ghost" id="refresh-mail" type="button">
+              <svg><use href="#i-refresh"/></svg>刷新
+            </button>
+            <button class="btn primary" id="open-mail-import" type="button">
+              <svg><use href="#i-upload"/></svg>导入凭证
+            </button>
+          </div>
+        </header>
+
+        <div class="panel">
+          <div class="toolbar">
+            <div class="search">
+              <svg><use href="#i-search"/></svg>
+              <input id="mail-search" type="search" placeholder="搜索邮箱…" autocomplete="off">
+            </div>
+            <select id="mail-status" class="select">
+              <option value="all">全部状态</option>
+              <option value="available">可用</option>
+              <option value="partial">部分消耗</option>
+              <option value="exhausted">已耗尽</option>
+            </select>
+            <select id="mail-select-by-status" class="select" title="按状态全选（跨页）">
+              <option value="">选择全部…</option>
+              <option value="available">全部可用邮箱</option>
+              <option value="partial">全部部分消耗</option>
+              <option value="exhausted">全部已耗尽</option>
+            </select>
+            <div class="seg push-right">
+              <button type="button" data-mail-select="page">本页全部</button>
+              <button type="button" data-mail-select="clear">清空选择</button>
+            </div>
+            <span class="hint mono" id="mail-path"></span>
+          </div>
+          <div class="batchbar" id="mail-batch">
+            <span>已选 <b id="mail-selected-count">0</b> 项</span>
+            <span class="vsep"></span>
+            <button class="link danger" id="delete-mail" type="button">删除</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="c-check"><input id="mail-select-all" type="checkbox" aria-label="全选"></th>
+                  <th>邮箱</th>
+                  <th>Client ID</th>
+                  <th>Refresh Token</th>
+                  <th>状态</th>
+                  <th>别名消耗</th>
+                </tr>
+              </thead>
+              <tbody id="mail-rows"></tbody>
+            </table>
+            <div class="empty" id="mail-empty" hidden>
+              <svg><use href="#i-mail"/></svg>
+              <strong>暂无邮箱凭证</strong>
+              <span>四段格式：邮箱----密码----ClientID----Token</span>
+            </div>
+          </div>
+          <footer class="table-foot">
+            <span id="mail-count">共 0 条</span>
+            <div class="pager">
+              <button class="icon-btn" id="mail-prev" type="button" aria-label="上一页"><svg><use href="#i-chev-l"/></svg></button>
+              <span id="mail-page-label">1 / 1</span>
+              <button class="icon-btn" id="mail-next" type="button" aria-label="下一页"><svg><use href="#i-chev-r"/></svg></button>
+              <input class="page-jump" id="mail-page-jump" type="number" min="1" placeholder="页码" title="输入页码回车跳转">
+            </div>
+          </footer>
+        </div>
+      </section>
+
+      <!-- ── Proxies view ── -->
+      <section class="view" data-view-panel="proxies" hidden>
+        <header class="topbar">
+          <div class="topbar-title">
+            <p class="eyebrow">PROXY POOL</p>
+            <h1>代理池</h1>
+          </div>
+          <div class="top-actions">
+            <button class="btn ghost" id="check-all-proxies" type="button">
+              <svg><use href="#i-zap"/></svg>检测全部
+            </button>
+            <button class="btn ghost" id="refresh-proxies" type="button">
+              <svg><use href="#i-refresh"/></svg>刷新
+            </button>
+            <button class="btn primary" id="open-proxy-import" type="button">
+              <svg><use href="#i-upload"/></svg>导入代理
+            </button>
+          </div>
+        </header>
+
+        <div class="panel">
+          <div class="toolbar">
+            <div class="search">
+              <svg><use href="#i-search"/></svg>
+              <input id="proxy-search" type="search" placeholder="搜索 host / 用户 / 出口 IP…" autocomplete="off">
+            </div>
+            <div class="seg">
+              <button type="button" data-proxy-select="page">本页全部</button>
+              <button type="button" data-proxy-select="clear">清空选择</button>
+            </div>
+            <span class="hint mono" id="proxy-path"></span>
+          </div>
+          <div class="batchbar" id="proxy-batch">
+            <span>已选 <b id="proxy-selected-count">0</b> 项</span>
+            <span class="vsep"></span>
+            <button class="link" id="check-selected-proxies" type="button">检测选中</button>
+            <button class="link danger" id="delete-proxies" type="button">删除</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="c-check"><input id="proxy-select-all" type="checkbox" aria-label="全选"></th>
+                  <th>代理</th>
+                  <th>认证用户</th>
+                  <th>状态</th>
+                  <th>协议</th>
+                  <th>延迟</th>
+                  <th>出口 IP</th>
+                  <th>检测时间</th>
+                  <th class="c-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="proxy-rows"></tbody>
+            </table>
+            <div class="empty" id="proxy-empty" hidden>
+              <svg><use href="#i-server"/></svg>
+              <strong>代理池为空</strong>
+              <span>支持格式：host:port:user:pass（每行一个）</span>
+            </div>
+          </div>
+          <footer class="table-foot">
+            <span id="proxy-count">共 0 个代理</span>
+            <span class="hint" id="proxy-health"></span>
+            <div class="pager">
+              <button class="icon-btn" id="proxy-prev" type="button" aria-label="上一页"><svg><use href="#i-chev-l"/></svg></button>
+              <span id="proxy-page-label">1 / 1</span>
+              <button class="icon-btn" id="proxy-next" type="button" aria-label="下一页"><svg><use href="#i-chev-r"/></svg></button>
+              <input class="page-jump" id="proxy-page-jump" type="number" min="1" placeholder="页码" title="输入页码回车跳转">
+            </div>
+          </footer>
+        </div>
+      </section>
+
+      <!-- ── Tools view ── -->
+      <section class="view" data-view-panel="tools" hidden>
+        <header class="topbar">
+          <div class="topbar-title">
+            <p class="eyebrow">UTILITIES</p>
+            <h1>工具</h1>
+          </div>
+        </header>
+
+        <div class="tools-grid">
+          <div class="panel">
+            <div class="panel-head">
+              <h2><svg><use href="#i-swap"/></svg>账号格式转换</h2>
+              <span class="chip">sub2api ↔ CPA / CODEX</span>
+            </div>
+            <div class="panel-body">
+              <div class="dropzone" id="convert-dropzone">
+                <svg><use href="#i-file"/></svg>
+                <p id="convert-file-label">拖拽文件到这里，或点击选择</p>
+                <span>支持 sub2api .json、xai/codex .json、打包 .zip（单个文件）</span>
+                <input id="convert-file" type="file" accept=".json,.zip" hidden>
+              </div>
+              <div class="form-grid" style="margin-top:14px">
+                <label class="field">
+                  <span>目标格式 <em>auto 自动识别</em></span>
+                  <select id="convert-to" class="select wide">
+                    <option value="auto">自动（原生 → sub2api / sub2api → 原生包）</option>
+                    <option value="sub2">转为 sub2api JSON</option>
+                    <option value="cpa">转为 Grok CPA 包（xai-*.json .zip）</option>
+                    <option value="codex">转为 OpenAI CODEX 包（codex-*.json .zip）</option>
+                    <option value="native">按平台拆成原生包（CPA + CODEX）</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>文件名备注 <em>可选</em></span>
+                  <input id="convert-note" type="text" placeholder="如 outlook20">
+                </label>
+              </div>
+              <div style="margin-top:16px; display:flex; gap:9px; align-items:center">
+                <button class="btn primary" id="convert-run" type="button">
+                  <svg><use href="#i-swap"/></svg>开始转换
+                </button>
+                <span class="hint" id="convert-status"></span>
+              </div>
+              <div class="convert-result" id="convert-result" hidden>
+                <div class="convert-result-row">
+                  <svg><use href="#i-check"/></svg>
+                  <div>
+                    <strong id="convert-result-name">-</strong>
+                    <span class="hint" id="convert-result-meta">-</span>
+                  </div>
+                  <button class="btn ghost sm" id="convert-redownload" type="button">
+                    <svg><use href="#i-download"/></svg>重新下载
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2><svg><use href="#i-box"/></svg>格式说明</h2></div>
+            <div class="panel-body format-help">
+              <div class="fmt-block">
+                <strong>sub2api JSON</strong>
+                <p>通用交换格式，顶层含 <code>type / version / exported_at / proxies / accounts</code>，账号按 <code>platform</code> 区分 grok / openai。</p>
+              </div>
+              <div class="fmt-block">
+                <strong>Grok CPA 包</strong>
+                <p>CLIProxyAPI 的 <code>xai-*.json</code>，字段含 access_token / refresh_token / expired / token_endpoint 等，与本项目 cpa_auths 产物一致。</p>
+              </div>
+              <div class="fmt-block">
+                <strong>OpenAI CODEX 包</strong>
+                <p><code>codex-*.json</code>，含 access_token / refresh_token 或 session_token、account_id、plan_type 等。</p>
+              </div>
+              <div class="fmt-block">
+                <strong>识别规则</strong>
+                <p><code>auto</code> 模式：输入为 sub2api 则按 platform 拆出 CPA / CODEX 两套 zip；输入为原生格式（单 json / 目录打包 zip / json 列表）则合并转为 sub2api。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Settings view ── -->
+      <section class="view" data-view-panel="settings" hidden>
+        <header class="topbar">
+          <div class="topbar-title">
+            <p class="eyebrow">CONFIG.JSON</p>
+            <h1>配置中心</h1>
+          </div>
+          <div class="top-actions">
+            <button class="btn ghost" id="reload-config" type="button">
+              <svg><use href="#i-refresh"/></svg>重新加载
+            </button>
+            <button class="btn primary" id="save-config" type="button">
+              <svg><use href="#i-check"/></svg>保存配置
+            </button>
+          </div>
+        </header>
+
+        <div class="settings-grid-2col">
+          <div class="panel">
+            <div class="panel-head"><h2><svg><use href="#i-mail"/></svg>邮箱与网络</h2></div>
+            <div class="panel-body"><div class="settings-grid" id="settings-basic"></div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2><svg><use href="#i-zap"/></svg>注册与 CPA</h2></div>
+            <div class="panel-body"><div class="settings-grid" id="settings-cpa"></div></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2><svg><use href="#i-settings"/></svg>原始 JSON（高级）</h2></div>
+          <div class="panel-body">
+            <p class="hint" style="margin-bottom:10px">可直接编辑完整配置；密钥留空表示保留原值，保存时表单字段优先覆盖。</p>
+            <textarea id="config-raw" class="code" spellcheck="false"></textarea>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Jobs drawer -->
+  <aside class="drawer" id="job-drawer" aria-hidden="true">
+    <header class="drawer-head">
+      <div>
+        <p class="eyebrow">ACTIVITY</p>
+        <h2>任务记录</h2>
+      </div>
+      <button class="icon-btn" id="close-jobs" type="button" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+    </header>
+    <div class="drawer-body" id="job-list"></div>
+  </aside>
+  <div class="backdrop" id="drawer-backdrop" hidden></div>
+
+  <!-- Mail import dialog -->
+  <dialog id="mail-import-dialog">
+    <form method="dialog" class="dialog" id="mail-import-form">
+      <header class="dialog-head">
+        <div>
+          <p class="eyebrow">IMPORT</p>
+          <h2>导入 Hotmail 凭证</h2>
+        </div>
+        <button class="icon-btn" value="cancel" type="submit" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+      </header>
+      <div class="dialog-body">
+        <p class="hint">每行一条，四段格式：<code>邮箱----密码----ClientID----Token</code></p>
+        <textarea id="mail-import-text" class="code" placeholder="user@hotmail.com----password----client-id----refresh_token"></textarea>
+        <label class="switch-row">
+          <span>替换现有文件（默认追加合并）</span>
+          <span class="switch"><input id="mail-import-replace" type="checkbox"><i></i></span>
+        </label>
+      </div>
+      <footer class="dialog-foot">
+        <button class="btn ghost" value="cancel" type="submit">取消</button>
+        <button class="btn primary" id="mail-import-submit" value="default" type="submit">导入</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Proxy import dialog -->
+  <dialog id="proxy-import-dialog">
+    <form method="dialog" class="dialog" id="proxy-import-form">
+      <header class="dialog-head">
+        <div>
+          <p class="eyebrow">IMPORT</p>
+          <h2>导入代理</h2>
+        </div>
+        <button class="icon-btn" value="cancel" type="submit" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+      </header>
+      <div class="dialog-body">
+        <p class="hint">每行一个，支持：<code>host:port:user:pass</code>、<code>host:port</code>、<code>http://user:pass@host:port</code></p>
+        <textarea id="proxy-import-text" class="code" placeholder="us.arxlabs.io:3010:user-region-US-sid-xxx:pass&#10;1.2.3.4:8080"></textarea>
+        <label class="switch-row">
+          <span>替换现有代理池（默认追加合并）</span>
+          <span class="switch"><input id="proxy-import-replace" type="checkbox"><i></i></span>
+        </label>
+      </div>
+      <footer class="dialog-foot">
+        <button class="btn ghost" value="cancel" type="submit">取消</button>
+        <button class="btn primary" id="proxy-import-submit" value="default" type="submit">导入</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toast-region" aria-live="polite"></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
