@@ -18,6 +18,12 @@ class WebuiTimeutilTests(unittest.TestCase):
             "2026-07-20 23:30:41",
         )
 
+    def test_iso_to_beijing_display_is_idempotent(self):
+        self.assertEqual(
+            timeutil.iso_to_beijing_display("2026-07-20 23:30:41"),
+            "2026-07-20 23:30:41",
+        )
+
     def test_timestamp_display_is_human_readable(self):
         self.assertEqual(
             timeutil.timestamp_display(0),

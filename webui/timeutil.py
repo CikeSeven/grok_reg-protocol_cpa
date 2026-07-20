@@ -66,7 +66,7 @@ def iso_to_beijing_display(value: Any) -> str:
         src = text[:-1] + "+00:00" if text.endswith("Z") else text
         dt = datetime.fromisoformat(src)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
         return dt.astimezone(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return text
