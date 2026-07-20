@@ -87,7 +87,7 @@ tar -xzf "$RELEASE_ARCHIVE" -C "$STAGING_DIR"
 while IFS= read -r -d '' relative; do
   relative="${relative#./}"
   case "$relative" in
-    config.json|config.local.json|config.json.bak*|.env|accounts_*.txt|emails_used.txt|emails_error.txt|emails_error.txt.*|proxies.txt|*/proxies.txt|proxies_state.json|*/proxies_state.json|mail_credentials.txt|*/mail_credentials.txt|cpa_pool_state.json|*/cpa_pool_state.json|cpa_auths/*|*/cpa_auths/*|cpa_quarantine/*|*/cpa_quarantine/*|cookies/*|*/cookies/*|screenshots/*|*/screenshots/*|*.log|*.bak|*.pyc|*/__pycache__/*|.venv/*)
+    config.json|config.local.json|config.json.bak*|.env|accounts_*.txt|emails_used.txt|emails_error.txt|emails_error.txt.*|proxies.txt|*/proxies.txt|proxies_state.json|*/proxies_state.json|mail_credentials.txt|*/mail_credentials.txt|cpa_pool_state.json|*/cpa_pool_state.json|cpa_pool_scan.journal.jsonl|*/cpa_pool_scan.journal.jsonl|cpa_auths/*|*/cpa_auths/*|cpa_quarantine/*|*/cpa_quarantine/*|cookies/*|*/cookies/*|screenshots/*|*/screenshots/*|*.log|*.bak|*.pyc|*/__pycache__/*|.venv/*)
       echo "ERROR: release archive contains protected runtime file: ${relative}" >&2
       exit 1
       ;;

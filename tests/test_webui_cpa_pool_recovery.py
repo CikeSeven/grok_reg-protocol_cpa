@@ -412,6 +412,144 @@ class WebuiCpaPoolRecoveryTests(unittest.TestCase):
         self.assertTrue(persisted["active_scan"]["cancel_requested"])
         self.assertTrue(persisted["active_scan"]["cancel_requested_at"])
 
+    def test_journal_checkpoint_restores_aggregate_and_skips_reprobe(self):
+        self._persist_interrupted_scan(trigger="auto")
+        first = self._monitors[-1]
+        checked_at = cpa_pool._utc_now()
+        row = {
+            "email": "pending@example.com",
+            "path": "/tmp/xai-pending.json",
+            "filename": "xai-pending.json",
+            "location": "auth_dir",
+            "checked_at": checked_at,
+            "status": "quota",
+            "reason": "quota exhausted",
+            "refreshed": True,
+            "reenabled": True,
+            "action": "disable",
+            "scan_id": "persisted1",
+        }
+        self.assertTrue(
+            first._append_scan_journal(
+                scan_id="persisted1",
+                item_key="pending@example.com",
+                row=row,
+            )
+        )
+        with first._scan_journal_path().open("ab") as handle:
+            handle.write(b'{"journal_version":1,"scan_id":"persisted1","row":"\xff')
+
+        recovered = self._monitor()
+        self.assertEqual(recovered._progress["done"], 2)
+        self.assertEqual(recovered._summary["counts"], {"ok": 1, "quota": 1})
+        self.assertEqual(recovered._summary["actions"], {"disable": 1})
+        self.assertEqual(recovered._summary["refreshed"], 1)
+        self.assertEqual(recovered._summary["reenabled"], 1)
+        self.assertEqual(recovered._results["pending@example.com"]["status"], "quota")
+        self.assertEqual(
+            recovered._active_scan["completed"],
+            ["done@example.com", "pending@example.com"],
+        )
+
+        settings = self._settings(auto_scan=False, scan_interval_sec=300)
+        index = {
+            "done@example.com": {"email": "done@example.com"},
+            "pending@example.com": {"email": "pending@example.com"},
+        }
+        with (
+            mock.patch("webui.cpa_pool.settings_from_config", return_value=settings),
+            mock.patch("webui.cpa_pool.store.list_cpa_index", return_value=index),
+            mock.patch.object(recovered, "_scan_one") as scan_one,
+            mock.patch.object(recovered, "_maybe_start_refill", return_value={"enabled": False, "started": False}),
+            mock.patch.object(recovered, "quarantine_summary", return_value={"total": 0}),
+        ):
+            recovered.ensure_scheduler()
+            recovered._scan_thread.join(timeout=5)
+
+        scan_one.assert_not_called()
+        self.assertFalse(recovered._scan_journal_path().exists())
+        self.assertEqual(recovered._scan_history[0]["done"], 2)
+        self.assertEqual(recovered._scan_history[0]["counts"], {"ok": 1, "quota": 1})
+
+    def test_scan_journals_each_account_without_per_item_full_snapshot(self):
+        monitor = self._monitor()
+        settings = self._settings(auto_scan=False, scan_workers=1)
+        index = {
+            f"account{number}@example.com": {
+                "email": f"account{number}@example.com",
+                "path": f"/tmp/xai-account{number}.json",
+                "location": "auth_dir",
+            }
+            for number in range(3)
+        }
+
+        def scan_one(item, _settings, _proxy_picker):
+            return {
+                "email": item["email"],
+                "path": item["path"],
+                "filename": Path(item["path"]).name,
+                "location": item["location"],
+                "checked_at": cpa_pool._utc_now(),
+                "status": "ok",
+                "reason": "models ok",
+                "refreshed": False,
+                "reenabled": False,
+            }
+
+        with (
+            mock.patch("webui.cpa_pool.settings_from_config", return_value=settings),
+            mock.patch("webui.cpa_pool.store.list_cpa_index", return_value=index),
+            mock.patch.object(monitor, "_scan_one", side_effect=scan_one),
+            mock.patch.object(monitor, "_maybe_start_refill", return_value={"enabled": False, "started": False}),
+            mock.patch.object(monitor, "quarantine_summary", return_value={"total": 0}),
+            mock.patch.object(monitor, "status", return_value={"running": True}),
+            mock.patch("webui.cpa_pool.ThreadPoolExecutor", _InlineExecutor),
+            mock.patch.object(monitor, "_save_state", wraps=monitor._save_state) as save_state,
+            mock.patch.object(monitor, "_append_scan_journal", wraps=monitor._append_scan_journal) as append_journal,
+        ):
+            result = monitor.start_scan({"trigger": "manual"})
+            self.assertTrue(result["started"])
+            monitor._scan_thread.join(timeout=5)
+
+        self.assertFalse(monitor._scan_thread.is_alive())
+        self.assertEqual(append_journal.call_count, 3)
+        self.assertEqual(save_state.call_count, 5)
+        self.assertFalse(monitor._scan_journal_path().exists())
+
+    def test_state_serialization_does_not_block_result_reads(self):
+        monitor = self._monitor()
+        monitor._results = {
+            "reader@example.com": {
+                "email": "reader@example.com",
+                "status": "ok",
+                "checked_at": cpa_pool._utc_now(),
+            }
+        }
+        serialization_started = threading.Event()
+        release_serialization = threading.Event()
+        original_dumps = cpa_pool.json.dumps
+
+        def blocking_dumps(*args, **kwargs):
+            serialization_started.set()
+            release_serialization.wait(timeout=5)
+            return original_dumps(*args, **kwargs)
+
+        writer = threading.Thread(target=monitor._save_state)
+        read_result: dict[str, object] = {}
+        reader = threading.Thread(target=lambda: read_result.update(monitor.list_results()))
+        with mock.patch("webui.cpa_pool.json.dumps", side_effect=blocking_dumps):
+            writer.start()
+            self.assertTrue(serialization_started.wait(timeout=2))
+            reader.start()
+            reader.join(timeout=0.5)
+            responsive = not reader.is_alive()
+            release_serialization.set()
+            writer.join(timeout=5)
+            reader.join(timeout=5)
+
+        self.assertTrue(responsive, "result reads waited for full-state JSON serialization")
+        self.assertEqual(read_result["total"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,7 @@ proxies_state.json
 mail_credentials.txt
 cpa_pool_state.json
 .cpa_pool_state.json.tmp
+cpa_pool_scan.journal.jsonl
 cpa_quarantine/
 cpa_auths/
 cookies/

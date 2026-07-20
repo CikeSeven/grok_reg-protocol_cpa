@@ -33,8 +33,10 @@ from . import store
 from . import timeutil
 
 STATE_PATH = store.ROOT / "cpa_pool_state.json"
+SCAN_JOURNAL_FILENAME = "cpa_pool_scan.journal.jsonl"
 DEFAULT_QUARANTINE_DIR = store.ROOT / "cpa_quarantine"
 STATE_VERSION = 2
+SCAN_JOURNAL_VERSION = 1
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     # scan
@@ -564,9 +566,142 @@ class CpaPoolMonitor:
                     loaded_settings = dict(DEFAULT_SETTINGS)
                     loaded_settings.update(restored["settings"])
                     self._settings = loaded_settings
+                restored_count = self._restore_scan_journal()
+                if restored_count:
+                    self._logs.append(
+                        f"[{timeutil.now_clock()}] 从巡检检查点恢复 {restored_count} 个已完成账号"
+                    )
                 self._recovery_pending = not bool(restored.get("cancel_requested"))
         except Exception:
             return
+
+    @staticmethod
+    def _scan_journal_path() -> Path:
+        return STATE_PATH.with_name(SCAN_JOURNAL_FILENAME)
+
+    def _restore_scan_journal(self) -> int:
+        active = self._active_scan
+        scan_id = str(active.get("scan_id") or "")
+        path = self._scan_journal_path()
+        if not scan_id or not path.is_file():
+            return 0
+
+        item_keys = {
+            self._scan_item_key(item)
+            for item in (active.get("items") or [])
+            if isinstance(item, dict) and self._scan_item_key(item)
+        }
+        if not item_keys:
+            return 0
+
+        journal_rows: dict[str, tuple[dict[str, Any], str]] = {}
+        try:
+            with path.open("rb") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except (TypeError, UnicodeDecodeError, ValueError):
+                        continue
+                    if (
+                        not isinstance(record, dict)
+                        or record.get("journal_version") != SCAN_JOURNAL_VERSION
+                        or str(record.get("scan_id") or "") != scan_id
+                    ):
+                        continue
+                    item_key = str(record.get("item_key") or "").strip().lower()
+                    row = record.get("row")
+                    if item_key not in item_keys or not isinstance(row, dict):
+                        continue
+                    journal_rows[item_key] = (dict(row), str(record.get("recorded_at") or ""))
+        except OSError:
+            return 0
+
+        completed = list(
+            dict.fromkeys(str(key) for key in (active.get("completed") or []) if str(key))
+        )
+        completed_set = set(completed)
+        summary = dict(self._summary)
+        counts = {str(k): int(v or 0) for k, v in dict(summary.get("counts") or {}).items()}
+        actions = {str(k): int(v or 0) for k, v in dict(summary.get("actions") or {}).items()}
+        refreshed = int(summary.get("refreshed") or 0)
+        reenabled = int(summary.get("reenabled") or 0)
+        restored_count = 0
+        current = ""
+        last_checkpoint_at = str(active.get("last_checkpoint_at") or "")
+
+        for item_key, (raw_row, recorded_at) in journal_rows.items():
+            row = _beijingize_record(raw_row)
+            email = str(row.get("email") or "").strip().lower()
+            if email and (item_key not in completed_set or email not in self._results):
+                self._results[email] = row
+            if item_key in completed_set:
+                continue
+            completed.append(item_key)
+            completed_set.add(item_key)
+            status = str(row.get("status") or "probe_failed")
+            counts[status] = counts.get(status, 0) + 1
+            if row.get("refreshed"):
+                refreshed += 1
+            if row.get("reenabled"):
+                reenabled += 1
+            if row.get("action"):
+                action = str(row.get("action"))
+                actions[action] = actions.get(action, 0) + 1
+            restored_count += 1
+            current = email or item_key
+            if recorded_at:
+                last_checkpoint_at = recorded_at
+
+        if not restored_count:
+            return 0
+
+        total = len(item_keys)
+        summary.update(
+            {
+                "counts": counts,
+                "actions": actions,
+                "total": total,
+                "done": len(completed_set),
+                "refreshed": refreshed,
+                "reenabled": reenabled,
+                "trigger": active.get("trigger") or summary.get("trigger") or "manual",
+                "started_at": active.get("started_at") or summary.get("started_at") or self._started_at,
+            }
+        )
+        self._summary = summary
+        self._progress = {"done": len(completed_set), "total": total, "current": current}
+        self._active_scan["completed"] = completed
+        if last_checkpoint_at:
+            self._active_scan["last_checkpoint_at"] = last_checkpoint_at
+        return restored_count
+
+    def _append_scan_journal(self, *, scan_id: str, item_key: str, row: dict[str, Any]) -> bool:
+        record = {
+            "journal_version": SCAN_JOURNAL_VERSION,
+            "scan_id": scan_id,
+            "item_key": item_key,
+            "recorded_at": _utc_now(),
+            "row": row,
+        }
+        try:
+            encoded = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+            with self._state_write_lock:
+                path = self._scan_journal_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(encoded)
+                    handle.flush()
+            return True
+        except Exception:
+            return False
+
+    def _clear_scan_journal(self) -> bool:
+        try:
+            with self._state_write_lock:
+                self._scan_journal_path().unlink(missing_ok=True)
+            return True
+        except Exception:
+            return False
 
     def _save_state(self) -> bool:
         try:
@@ -586,10 +721,10 @@ class CpaPoolMonitor:
                         "resume_count": self._resume_count,
                         "resumed_at": self._resumed_at,
                         "active_scan": dict(self._active_scan) if self._active_scan else None,
-                        "scan_history": [dict(v) for v in self._scan_history],
-                        "results": {k: dict(v) for k, v in self._results.items()},
+                        "scan_history": list(self._scan_history),
+                        "results": dict(self._results),
                     }
-                    encoded = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+                encoded = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
                 STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
                 tmp = STATE_PATH.with_name(f".{STATE_PATH.name}.tmp")
                 tmp.write_text(encoded, encoding="utf-8")
@@ -685,7 +820,8 @@ class CpaPoolMonitor:
             self._next_scan_at = time.time() + interval
         self._log("检测到已持久化的停止请求，原巡检任务不再恢复")
         self._append_scan_history(settings=self._settings)
-        self._save_state()
+        if self._save_state():
+            self._clear_scan_journal()
 
     def ensure_scheduler(self) -> None:
         cfg_settings = settings_from_config()
@@ -809,7 +945,8 @@ class CpaPoolMonitor:
         q = query.strip().lower()
         st = status.strip().lower()
         with self._lock:
-            items = [_beijingize_record(dict(v)) for v in self._results.values()]
+            result_rows = list(self._results.values())
+        items = [_beijingize_record(dict(v)) for v in result_rows]
         if q:
             items = [i for i in items if q in str(i.get("email") or "").lower() or q in str(i.get("status") or "").lower() or q in str(i.get("reason") or "").lower()]
         if st and st != "all":
@@ -925,6 +1062,8 @@ class CpaPoolMonitor:
                 "resumed_at": "",
             }
         self._log(f"CPA 巡检任务已持久化：id={self._scan_id} trigger={trigger}")
+        if not self._clear_scan_journal():
+            self._log("旧巡检检查点清理失败，将按任务 ID 隔离")
         if not self._save_state():
             with self._lock:
                 self._running = False
@@ -1442,7 +1581,8 @@ class CpaPoolMonitor:
         q = query.strip().lower()
         oc = outcome.strip().lower()
         with self._lock:
-            items = [_beijingize_record(dict(v)) for v in self._scan_history]
+            history_rows = list(self._scan_history)
+        items = [_beijingize_record(dict(v)) for v in history_rows]
         if q:
             items = [
                 i for i in items
@@ -1607,6 +1747,13 @@ class CpaPoolMonitor:
                         row = self._apply_policy(merged, settings)
                         row["scan_id"] = scan_id
                         status = str(row.get("status") or "probe_failed")
+                        email = str(row.get("email") or "").lower()
+                        item_key = self._scan_item_key(item)
+                        journal_saved = self._append_scan_journal(
+                            scan_id=scan_id,
+                            item_key=item_key,
+                            row=row,
+                        )
                         counts[status] = counts.get(status, 0) + 1
                         if row.get("refreshed"):
                             refreshed += 1
@@ -1615,8 +1762,6 @@ class CpaPoolMonitor:
                         if row.get("action"):
                             action = str(row.get("action"))
                             actions[action] = actions.get(action, 0) + 1
-                        email = str(row.get("email") or "").lower()
-                        item_key = self._scan_item_key(item)
                         with self._lock:
                             if email:
                                 self._results[email] = row
@@ -1645,8 +1790,10 @@ class CpaPoolMonitor:
                             self._log(f"{email or row.get('filename')} -> {status}{act}: {row.get('reason')}")
                         elif done <= 5 or done % 100 == 0:
                             self._log(f"进度 {done}/{total}，OK={counts.get('ok', 0)}")
-                        if not self._save_state():
-                            self._log(f"巡检检查点写入失败：{email or item_key}")
+                        if not journal_saved:
+                            self._log(f"巡检增量检查点写入失败：{email or item_key}")
+                            if not self._save_state():
+                                self._log(f"巡检完整检查点写入失败：{email or item_key}")
 
             if self._cancel.is_set():
                 refill = {"enabled": bool(settings.get("auto_refill")), "started": False, "cancelled": True}
@@ -1707,7 +1854,8 @@ class CpaPoolMonitor:
                 self._scheduled_interval_sec = interval
                 self._next_scan_at = time.time() + interval
                 self._settings = current_settings
-            self._save_state()
+            if self._save_state():
+                self._clear_scan_journal()
 
 
 monitor = CpaPoolMonitor()
