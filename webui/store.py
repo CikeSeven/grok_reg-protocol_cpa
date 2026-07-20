@@ -360,6 +360,8 @@ def export_accounts(emails: list[str] | None = None) -> str:
 def list_cpa(
     *,
     query: str = "",
+    scan_status: str = "all",
+    scan_results: dict[str, dict[str, Any]] | None = None,
     page: int = 1,
     page_size: int = 50,
     config: dict[str, Any] | None = None,
@@ -376,6 +378,25 @@ def list_cpa(
             or q in str(item.get("mint_method") or "").lower()
             or q in str(item.get("location") or "").lower()
         ]
+    scan_results = {str(k).lower(): dict(v) for k, v in (scan_results or {}).items()}
+    st = str(scan_status or "all").strip().lower()
+    if st and st != "all":
+        def _row_scan_status(item: dict[str, Any]) -> str:
+            email = str(item.get("email") or "").lower()
+            result = scan_results.get(email) or {}
+            return str(result.get("status") or "unchecked").strip().lower() or "unchecked"
+
+        def _match_status(item: dict[str, Any]) -> bool:
+            row_status = _row_scan_status(item)
+            if st == "unchecked":
+                return row_status == "unchecked"
+            if st == "quota":
+                return row_status in {"quota", "cooling"}
+            if st == "bad":
+                return row_status not in {"ok", "quota", "cooling", "unchecked"}
+            return row_status == st
+
+        items = [item for item in items if _match_status(item)]
     total = len(items)
     page = max(1, int(page or 1))
     page_size = max(1, min(int(page_size or 50), 200))
@@ -387,6 +408,11 @@ def list_cpa(
     page_items = []
     for item in items[start:end]:
         row = dict(item)
+        scan = scan_results.get(str(row.get("email") or "").lower()) or {}
+        row["scan_status"] = str(scan.get("status") or "unchecked")
+        row["scan_reason"] = str(scan.get("reason") or "")
+        row["scan_checked_at"] = str(scan.get("checked_at") or "")
+        row["scan_action"] = str(scan.get("action") or "")
         row["mtime_iso"] = datetime.fromtimestamp(item["mtime"], tz=timezone.utc).strftime(
             "%Y-%m-%d %H:%M:%S UTC"
         )

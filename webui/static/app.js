@@ -18,6 +18,7 @@ const state = {
   cpaPages: 1,
   cpaTotal: 0,
   cpaQuery: "",
+  cpaStatus: "all",
   selectedCpa: new Set(),
   cpaPool: null,
   cpaPoolMap: new Map(),
@@ -79,6 +80,7 @@ const statusText = {
   deleted: "已删除",
   policy_error: "策略异常",
   manual_disabled: "手动禁用",
+  unchecked: "未巡检",
 };
 
 const mailStatusPill = {
@@ -90,7 +92,7 @@ const mailStatusPill = {
 function cpaPoolPill(status) {
   if (status === "ok") return "ok";
   if (status === "quota" || status === "cooling" || status === "soft_fail" || status === "probe_failed") return "warn";
-  if (status === "disabled") return "idle";
+  if (status === "disabled" || status === "unchecked") return "idle";
   if (status === "running") return "running";
   if (!status) return "idle";
   return "err";
@@ -551,9 +553,10 @@ function renderCpa() {
   for (const row of state.cpa) {
     const selected = state.selectedCpa.has(row.email);
     const scan = state.cpaPoolMap.get(String(row.email || "").toLowerCase()) || {};
-    const scanStatus = scan.status || "";
+    const scanStatus = scan.status || row.scan_status || "";
+    const scanReason = scan.reason || row.scan_reason || "";
     const scanPill = scanStatus
-      ? `<span class="pill ${cpaPoolPill(scanStatus)}" title="${esc(scan.reason || "")}">${esc(statusText[scanStatus] || scanStatus)}</span>`
+      ? `<span class="pill ${cpaPoolPill(scanStatus)}" title="${esc(scanReason)}">${esc(statusText[scanStatus] || scanStatus)}</span>`
       : '<span class="pill idle">未巡检</span>';
     const expires = scan.expired || row.expired || "-";
     const refreshMark = scan.refreshed ? '<span class="chip">已续期</span>' : "";
@@ -591,6 +594,7 @@ function renderCpa() {
 async function loadCpa() {
   const params = new URLSearchParams({
     query: state.cpaQuery,
+    status: state.cpaStatus,
     page: String(state.cpaPage),
     page_size: "50",
   });
@@ -1679,6 +1683,12 @@ function bindEvents() {
     state.cpaPage = 1;
     loadCpa().catch((err) => toast(err.message, true));
   }));
+  $("#cpa-status").addEventListener("change", (e) => {
+    state.cpaStatus = e.target.value;
+    state.cpaPage = 1;
+    state.selectedCpa.clear();
+    loadCpa().catch((err) => toast(err.message, true));
+  });
   $("#cpa-prev").addEventListener("click", () => {
     if (state.cpaPage > 1) { state.cpaPage -= 1; loadCpa().catch(() => {}); }
   });

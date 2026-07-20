@@ -494,6 +494,20 @@
               <svg><use href="#i-search"/></svg>
               <input id="cpa-search" type="search" placeholder="搜索邮箱 / 方法 / 位置…" autocomplete="off">
             </div>
+            <select id="cpa-status" class="select">
+              <option value="all">全部状态</option>
+              <option value="ok">可用</option>
+              <option value="quota">额度/冷却</option>
+              <option value="bad">异常汇总</option>
+              <option value="refresh_failed">续期失败</option>
+              <option value="hard_bad">硬坏</option>
+              <option value="invalid">无效</option>
+              <option value="no_grok45">无 4.5</option>
+              <option value="soft_fail">软失败</option>
+              <option value="probe_failed">探测失败</option>
+              <option value="disabled">已禁用</option>
+              <option value="unchecked">未巡检</option>
+            </select>
             <div class="seg">
               <button type="button" data-cpa-select="page">本页全部</button>
               <button type="button" data-cpa-select="clear">清空选择</button>

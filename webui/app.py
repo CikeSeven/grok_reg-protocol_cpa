@@ -147,10 +147,22 @@ def create_app() -> FastAPI:
     @app.get("/api/cpa")
     def cpa_list(
         query: str = "",
+        status: str = "all",
         page: int = Query(1, ge=1),
         page_size: int = Query(50, ge=1, le=200),
     ) -> dict[str, Any]:
-        return store.list_cpa(query=query, page=page, page_size=page_size)
+        scan_results = {
+            str(r.get("email") or "").lower(): r
+            for r in cpa_pool_monitor.list_results(page_size=10000).get("items", [])
+            if isinstance(r, dict) and str(r.get("email") or "").strip()
+        }
+        return store.list_cpa(
+            query=query,
+            scan_status=status,
+            scan_results=scan_results,
+            page=page,
+            page_size=page_size,
+        )
 
     @app.delete("/api/cpa")
     async def cpa_delete(request: Request) -> dict[str, int]:
