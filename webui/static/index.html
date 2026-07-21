@@ -939,7 +939,7 @@
 
           <div class="panel mail-tool-panel">
             <div class="panel-head">
-              <h2><svg><use href="#i-mail"/></svg>微软邮箱</h2>
+              <h2><svg><use href="#i-mail"/></svg>微软邮箱独立库</h2>
               <div class="panel-actions">
                 <button class="btn ghost sm" id="mail-tool-refresh" type="button" title="刷新邮箱列表">
                   <svg><use href="#i-refresh"/></svg>刷新
@@ -1144,13 +1144,99 @@
     </form>
   </dialog>
 
+  <!-- Managed mailbox reader -->
+  <dialog id="mail-reader-dialog" class="mail-reader-dialog">
+    <section class="mail-reader" aria-labelledby="mail-reader-title">
+      <header class="mail-reader-head">
+        <div class="mail-reader-identity">
+          <span class="mail-reader-avatar"><svg><use href="#i-mail"/></svg></span>
+          <div>
+            <p class="eyebrow">MAILBOX</p>
+            <h2 id="mail-reader-title">邮箱邮件</h2>
+            <span class="mono" id="mail-reader-email"></span>
+          </div>
+        </div>
+        <div class="mail-reader-head-actions">
+          <span class="pill idle" id="mail-reader-protocol">未检测</span>
+          <button class="icon-btn" id="mail-reader-refresh" type="button" title="刷新邮件" aria-label="刷新邮件">
+            <svg><use href="#i-refresh"/></svg>
+          </button>
+          <button class="icon-btn" id="mail-reader-close" type="button" title="关闭" aria-label="关闭">
+            <svg><use href="#i-x"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="mail-reader-toolbar">
+        <div class="seg mail-reader-folders" role="tablist" aria-label="邮件文件夹">
+          <button class="active" type="button" data-mail-reader-folder="all" role="tab" aria-selected="true">全部邮件</button>
+          <button type="button" data-mail-reader-folder="inbox" role="tab" aria-selected="false">收件箱</button>
+          <button type="button" data-mail-reader-folder="junk" role="tab" aria-selected="false">垃圾邮件</button>
+          <button type="button" data-mail-reader-folder="deleted" role="tab" aria-selected="false">已删除</button>
+          <button type="button" data-mail-reader-folder="archive" role="tab" aria-selected="false">归档</button>
+        </div>
+        <select id="mail-reader-proxy" class="select" title="邮件连接方式">
+          <option value="direct">直连</option>
+          <option value="config">注册代理</option>
+        </select>
+      </div>
+
+      <div class="mail-reader-status" id="mail-reader-status" aria-live="polite"></div>
+      <div class="mail-reader-layout">
+        <aside class="mail-reader-list-pane" aria-label="邮件列表">
+          <div class="mail-reader-list" id="mail-reader-list"></div>
+          <div class="mail-reader-empty" id="mail-reader-list-empty" hidden>
+            <svg><use href="#i-mail"/></svg>
+            <strong>该文件夹暂无邮件</strong>
+          </div>
+        </aside>
+        <article class="mail-reader-content" id="mail-reader-content">
+          <div class="mail-reader-empty" id="mail-reader-content-empty">
+            <svg><use href="#i-mail"/></svg>
+            <strong>选择一封邮件查看正文</strong>
+          </div>
+          <div class="mail-reader-message" id="mail-reader-message" hidden>
+            <header class="mail-reader-message-head">
+              <div>
+                <span class="pill idle" id="mail-reader-message-folder"></span>
+                <h3 id="mail-reader-message-subject"></h3>
+              </div>
+              <div class="mail-reader-code" id="mail-reader-code" hidden>
+                <span>验证码</span>
+                <strong class="mono" id="mail-reader-code-value"></strong>
+                <button class="icon-btn" id="mail-reader-copy-code" type="button" title="复制验证码" aria-label="复制验证码">
+                  <svg><use href="#i-file"/></svg>
+                </button>
+              </div>
+            </header>
+            <dl class="mail-reader-meta">
+              <div><dt>发件人</dt><dd id="mail-reader-sender"></dd></div>
+              <div><dt>收件人</dt><dd id="mail-reader-recipient"></dd></div>
+              <div><dt>时间</dt><dd class="mono" id="mail-reader-time"></dd></div>
+            </dl>
+            <pre id="mail-reader-body" class="mail-reader-body"></pre>
+          </div>
+        </article>
+      </div>
+
+      <footer class="mail-reader-foot">
+        <span id="mail-reader-count">0 封邮件</span>
+        <div class="pager">
+          <button class="icon-btn" id="mail-reader-prev" type="button" aria-label="上一页"><svg><use href="#i-chev-l"/></svg></button>
+          <span id="mail-reader-page">第 1 页</span>
+          <button class="icon-btn" id="mail-reader-next" type="button" aria-label="下一页"><svg><use href="#i-chev-r"/></svg></button>
+        </div>
+      </footer>
+    </section>
+  </dialog>
+
   <!-- Mail tool import dialog -->
   <dialog id="mail-tool-import-dialog" class="dialog-wide">
     <form method="dialog" class="dialog" id="mail-tool-import-form">
       <header class="dialog-head">
         <div>
           <p class="eyebrow">MICROSOFT MAIL</p>
-          <h2>导入微软邮箱</h2>
+          <h2>导入到独立邮箱库</h2>
         </div>
         <button class="icon-btn" value="cancel" type="submit" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
       </header>
@@ -1173,7 +1259,7 @@
           <div class="convert-warnings" id="mail-tool-import-issues" hidden></div>
         </div>
         <label class="switch-row">
-          <span>替换现有邮箱文件</span>
+          <span>替换独立邮箱库</span>
           <span class="switch"><input id="mail-tool-import-replace" type="checkbox"><i></i></span>
         </label>
       </div>

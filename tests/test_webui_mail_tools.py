@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from email.message import EmailMessage
 from pathlib import Path
 from unittest import mock
 
@@ -39,6 +40,29 @@ class _Imap:
     def logout(self):
         self.logged_out = True
         return "BYE", []
+
+
+class _MessageImap(_Imap):
+    def __init__(self, *_args, **_kwargs) -> None:
+        super().__init__()
+        message = EmailMessage()
+        message["Subject"] = "Mailbox message 654321"
+        message["From"] = "sender@example.com"
+        message["To"] = "user@outlook.com"
+        message["Date"] = "Tue, 21 Jul 2026 00:00:00 +0000"
+        message.set_content("First line\nSecond line with verification code 654321")
+        self.raw = message.as_bytes()
+
+    def select(self, mailbox, readonly=True):
+        del readonly
+        return ("OK", [b"2"]) if mailbox == "INBOX" else ("NO", [])
+
+    def uid(self, action, *_args):
+        if action == "search":
+            return "OK", [b"1 2"]
+        if action == "fetch":
+            return "OK", [(b"2 (RFC822 {100})", self.raw), b")"]
+        raise AssertionError(action)
 
 
 class MailImportParserTests(unittest.TestCase):
@@ -208,22 +232,100 @@ class MicrosoftMailboxProbeTests(unittest.TestCase):
         self.assertEqual(result["code"], "123456")
         self.assertEqual(result["sender"], "sender@example.com")
 
+    def test_imap_messages_include_body_folder_and_exact_pagination(self):
+        def request(_method, _url, **_kwargs):
+            return _Response(200, {"access_token": "access-imap"})
+
+        probe = mail_tools.MicrosoftMailboxProbe(
+            self._account(),
+            request_func=request,
+            imap_factory=_MessageImap,
+        )
+        result = probe.list_messages(folder="inbox", page=1, page_size=1)
+
+        self.assertEqual(result["protocol"], "imap")
+        self.assertEqual(result["total"], 2)
+        self.assertTrue(result["total_exact"])
+        self.assertTrue(result["has_more"])
+        self.assertEqual(result["items"][0]["folder"], "inbox")
+        self.assertIn("First line", result["items"][0]["body"])
+        self.assertEqual(result["items"][0]["code"], "654321")
+        self.assertEqual(result["items"][0]["received_at"], "2026-07-21 08:00:00")
+
+    def test_graph_messages_are_paginated_and_html_is_plain_text(self):
+        calls: list[tuple[str, str, dict]] = []
+
+        def request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            scope = str((kwargs.get("data") or {}).get("scope") or "")
+            if method == "POST" and "graph.microsoft.com" not in scope:
+                return _Response(400, {"error": "invalid_scope"})
+            if method == "POST":
+                return _Response(200, {"access_token": "graph-access-token"})
+            select = str((kwargs.get("params") or {}).get("$select") or "")
+            if select == "id":
+                return _Response(200, {"value": []})
+            return _Response(
+                200,
+                {
+                    "value": [
+                        {
+                            "id": "graph-message-1",
+                            "subject": "Graph message",
+                            "receivedDateTime": "2026-07-21T00:00:00Z",
+                            "isRead": False,
+                            "from": {"emailAddress": {"address": "graph@example.com"}},
+                            "toRecipients": [{"emailAddress": {"address": "user@outlook.com"}}],
+                            "bodyPreview": "Preview",
+                            "body": {"content": "<p>Hello<br>World</p><script>bad()</script>"},
+                        }
+                    ],
+                    "@odata.nextLink": "next",
+                },
+            )
+
+        probe = mail_tools.MicrosoftMailboxProbe(self._account(), request_func=request)
+        result = probe.list_messages(folder="archive", page=2, page_size=10)
+
+        self.assertEqual(result["protocol"], "graph")
+        self.assertFalse(result["total_exact"])
+        self.assertTrue(result["has_more"])
+        self.assertEqual(result["items"][0]["body"], "Hello\nWorld")
+        self.assertFalse(result["items"][0]["is_read"])
+        message_call = next(call for call in calls if "/archive/messages" in call[1])
+        self.assertEqual(message_call[2]["params"]["$skip"], 10)
+
 
 class MailToolManagerTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         root = Path(self._tmp.name)
-        self.mail_path = root / "mail_credentials.txt"
+        self.mail_path = root / "mail_tool_credentials.txt"
+        self.source_mail_path = root / "mail_credentials.txt"
         self.state_path = root / "mail_tool_state.json"
-        self._mail_file_patch = mock.patch.object(store, "mail_file", return_value=self.mail_path)
+        self._mail_file_patch = mock.patch.object(store, "mail_file", return_value=self.source_mail_path)
+        self._tool_file_patch = mock.patch.object(mail_tools, "MAIL_TOOL_CREDENTIALS_PATH", self.mail_path)
         self._state_patch = mock.patch.object(mail_tools, "MAIL_TOOL_STATE_PATH", self.state_path)
         self._mail_file_patch.start()
+        self._tool_file_patch.start()
         self._state_patch.start()
 
     def tearDown(self) -> None:
         self._state_patch.stop()
+        self._tool_file_patch.stop()
         self._mail_file_patch.stop()
         self._tmp.cleanup()
+
+    def test_original_mail_credentials_are_never_synchronized(self):
+        self.source_mail_path.write_text(
+            f"source@outlook.com----source-password----{CLIENT_ID}----{REFRESH_TOKEN}\n",
+            encoding="utf-8",
+        )
+
+        manager = mail_tools.MailToolManager()
+
+        self.assertEqual(manager.list_accounts()["total"], 0)
+        self.assertFalse(self.mail_path.exists())
 
     def test_import_normalizes_file_and_list_never_returns_secrets(self):
         manager = mail_tools.MailToolManager()
@@ -287,10 +389,10 @@ class MailToolManagerTests(unittest.TestCase):
             mode="replace",
         )
 
-        changed = store.update_mail_refresh_token(
+        changed = mail_tools._update_managed_refresh_token(
             "cas@outlook.com",
             "M." + "n" * 80,
-            expected_refresh_token="stale-token",
+            expected="stale-token",
         )
 
         self.assertFalse(changed)
@@ -303,6 +405,43 @@ class MailToolManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "检测任务运行中"):
             manager.import_accounts("blocked@outlook.com----pw", mode="append")
 
+    def test_message_body_is_returned_but_never_persisted(self):
+        manager = mail_tools.MailToolManager()
+        manager.import_accounts(
+            f"reader@outlook.com----pw----{CLIENT_ID}----{REFRESH_TOKEN}",
+            mode="replace",
+        )
+
+        class Probe:
+            def __init__(self, account, **_kwargs):
+                self.account = account
+
+            def list_messages(self, **_kwargs):
+                return {
+                    "email": self.account["email"],
+                    "folder": "all",
+                    "page": 1,
+                    "page_size": 30,
+                    "items": [{"id": "1", "subject": "private subject", "body": "private body"}],
+                    "total": 1,
+                    "total_exact": True,
+                    "has_more": False,
+                    "protocol": "graph",
+                    "provider": "graph_consumers",
+                    "checked_at": mail_tools.timeutil.now_iso(),
+                    "latency_ms": 2,
+                    "_refresh_token": "",
+                }
+
+        with mock.patch("webui.mail_tools.MicrosoftMailboxProbe", Probe):
+            result = manager.list_messages(email="reader@outlook.com")
+
+        self.assertEqual(result["items"][0]["body"], "private body")
+        persisted = self.state_path.read_text(encoding="utf-8")
+        self.assertNotIn("private body", persisted)
+        self.assertNotIn("private subject", persisted)
+        self.assertIn("邮件读取成功", persisted)
+
 
 class MailToolUiTests(unittest.TestCase):
     def test_tools_page_has_secondary_navigation_and_mail_workspace(self):
@@ -312,6 +451,9 @@ class MailToolUiTests(unittest.TestCase):
         self.assertIn('data-tool-page="mail"', html)
         self.assertIn('data-tool-panel="mail"', html)
         self.assertIn('id="mail-tool-import-dialog"', html)
+        self.assertIn('id="mail-reader-dialog"', html)
+        self.assertIn('data-mail-reader-folder="junk"', html)
+        self.assertIn('id="mail-reader-body"', html)
 
     def test_mail_tool_routes_are_registered(self):
         from webui.app import create_app
@@ -322,6 +464,7 @@ class MailToolUiTests(unittest.TestCase):
                 "/api/tools/mail/accounts",
                 "/api/tools/mail/inspect",
                 "/api/tools/mail/import",
+                "/api/tools/mail/messages",
                 "/api/tools/mail/check",
                 "/api/tools/mail/check/status",
                 "/api/tools/mail/check/stop",

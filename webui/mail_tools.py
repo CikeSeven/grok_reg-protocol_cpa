@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import imaplib
 import json
 import re
@@ -27,7 +28,9 @@ from . import store, timeutil
 
 
 MAIL_TOOL_STATE_PATH = store.ROOT / "mail_tool_state.json"
+MAIL_TOOL_CREDENTIALS_PATH = store.ROOT / "mail_tool_credentials.txt"
 MAIL_TOOL_STATE_VERSION = 1
+_CREDENTIAL_LOCK = threading.RLock()
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _CLIENT_ID_RE = re.compile(
@@ -423,6 +426,94 @@ def parse_mail_import(text: str) -> MailImportResult:
     return result
 
 
+def _read_managed_credentials(emails: set[str] | None = None) -> list[dict[str, str]]:
+    wanted = {str(email).strip().lower() for email in (emails or set()) if str(email).strip()}
+    if not MAIL_TOOL_CREDENTIALS_PATH.is_file():
+        return []
+    with _CREDENTIAL_LOCK:
+        rows = store.parse_mail_credentials(
+            MAIL_TOOL_CREDENTIALS_PATH.read_text(encoding="utf-8-sig", errors="replace")
+        )
+    return [dict(row) for row in rows if not wanted or row["email"].lower() in wanted]
+
+
+def _write_managed_credentials(rows: list[dict[str, str]]) -> None:
+    body = "\n".join(
+        f"{row['email']}----{row.get('password', '')}----{row.get('client_id', '')}----{row.get('token', '')}"
+        for row in rows
+    )
+    MAIL_TOOL_CREDENTIALS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = MAIL_TOOL_CREDENTIALS_PATH.with_name(
+        f".{MAIL_TOOL_CREDENTIALS_PATH.name}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        tmp.write_text(body + ("\n" if body else ""), encoding="utf-8")
+        tmp.chmod(0o600)
+        tmp.replace(MAIL_TOOL_CREDENTIALS_PATH)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _import_managed_credentials(records: list[MailCredential], *, mode: str) -> dict[str, Any]:
+    with _CREDENTIAL_LOCK:
+        existing = [] if mode == "replace" else _read_managed_credentials()
+        by_email = {row["email"].lower(): row for row in existing}
+        added = updated = 0
+        for record in records:
+            key = record.email.lower()
+            if key in by_email:
+                updated += 1
+            else:
+                added += 1
+            by_email[key] = {
+                "email": record.email,
+                "password": record.password,
+                "client_id": record.client_id,
+                "token": record.refresh_token,
+            }
+        rows = list(by_email.values())
+        _write_managed_credentials(rows)
+    return {
+        "added": added,
+        "updated": updated,
+        "total": len(rows),
+        "path": str(MAIL_TOOL_CREDENTIALS_PATH),
+    }
+
+
+def _delete_managed_credentials(emails: set[str]) -> int:
+    wanted = {str(email).strip().lower() for email in emails if str(email).strip()}
+    if not wanted or not MAIL_TOOL_CREDENTIALS_PATH.is_file():
+        return 0
+    with _CREDENTIAL_LOCK:
+        rows = _read_managed_credentials()
+        kept = [row for row in rows if row["email"].lower() not in wanted]
+        deleted = len(rows) - len(kept)
+        if deleted:
+            _write_managed_credentials(kept)
+    return deleted
+
+
+def _update_managed_refresh_token(email: str, token: str, *, expected: str) -> bool:
+    email_key = str(email or "").strip().lower()
+    new_token = str(token or "").strip()
+    if not email_key or not new_token or not MAIL_TOOL_CREDENTIALS_PATH.is_file():
+        return False
+    changed = False
+    with _CREDENTIAL_LOCK:
+        rows = _read_managed_credentials()
+        for row in rows:
+            if row["email"].lower() != email_key or row["token"] != expected:
+                continue
+            if row["token"] == new_token:
+                return False
+            row["token"] = new_token
+            changed = True
+        if changed:
+            _write_managed_credentials(rows)
+    return changed
+
+
 class MicrosoftMailboxProbe:
     """Validate a Microsoft mailbox using a real IMAP or Graph mailbox request."""
 
@@ -682,7 +773,8 @@ class MicrosoftMailboxProbe:
 
     @staticmethod
     def _message_text(message: Any) -> str:
-        chunks: list[str] = []
+        plain_chunks: list[str] = []
+        html_chunks: list[str] = []
         parts = message.walk() if message.is_multipart() else [message]
         for part in parts:
             if part.get_content_maintype() == "multipart" or part.get_filename():
@@ -695,10 +787,15 @@ class MicrosoftMailboxProbe:
                 text = payload.decode(charset, errors="replace")
             except Exception:
                 text = str(part.get_payload() or "")
-            chunks.append(text)
-        merged = " ".join(chunks)
-        merged = re.sub(r"<[^>]+>", " ", merged)
-        return re.sub(r"\s+", " ", merged).strip()
+            if part.get_content_type() == "text/plain":
+                plain_chunks.append(text)
+            else:
+                html_chunks.append(text)
+        if not plain_chunks:
+            return MicrosoftMailboxProbe._plain_text("\n\n".join(html_chunks))
+        merged = "\n\n".join(plain_chunks).replace("\r\n", "\n").replace("\r", "\n")
+        lines = [re.sub(r"[\t\f\v ]+", " ", line).rstrip() for line in merged.split("\n")]
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
     @staticmethod
     def _extract_code(text: str) -> str:
@@ -714,6 +811,227 @@ class MicrosoftMailboxProbe:
                 if len(code) == 6:
                     return code
         return ""
+
+    @staticmethod
+    def _plain_text(value: Any) -> str:
+        text = str(value or "")
+        text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", text)
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text = re.sub(r"(?i)</(?:p|div|li|tr|h[1-6])\s*>", "\n", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = html.unescape(text).replace("\r\n", "\n").replace("\r", "\n")
+        lines = [re.sub(r"[\t\f\v ]+", " ", line).strip() for line in text.split("\n")]
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+    def _imap_record(
+        self,
+        raw: bytes,
+        *,
+        folder: str,
+        message_id: bytes,
+        is_read: bool | None = None,
+    ) -> dict[str, Any]:
+        message = message_from_bytes(raw, policy=email_policy)
+        subject = self._decode_header(message.get("Subject"))
+        sender = self._decode_header(message.get("From"))
+        recipient = self._decode_header(message.get("To"))
+        body = self._message_text(message)[:100_000]
+        timestamp = self._timestamp(message.get("Date"))
+        return {
+            "id": f"{folder}:{message_id.decode('ascii', errors='ignore')}",
+            "folder": folder,
+            "subject": subject or "(无主题)",
+            "sender": sender,
+            "recipient": recipient,
+            "received_at": timeutil.timestamp_display(timestamp) if timestamp else "",
+            "received_ts": timestamp,
+            "preview": body[:300],
+            "body": body,
+            "code": self._extract_code(f"{subject}\n{body}"),
+            "is_read": is_read,
+        }
+
+    @staticmethod
+    def _imap_folder_candidates(folder: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        groups = {
+            "inbox": ("INBOX",),
+            "junk": ("Junk", '"Junk Email"', "Junk Email", "Spam"),
+            "deleted": ("Deleted Items",),
+            "archive": ("Archive",),
+            "sent": ("Sent Items", "Sent"),
+            "drafts": ("Drafts",),
+        }
+        if folder == "all":
+            return tuple(groups.items())
+        return ((folder, groups[folder]),)
+
+    def _list_imap_messages(self, *, folder: str, page: int, page_size: int) -> dict[str, Any]:
+        connection = None
+        records: list[dict[str, Any]] = []
+        total = 0
+        scan_cap = page * page_size
+        try:
+            if self.account["client_id"] and self.account["refresh_token"]:
+                if not self._imap_access_token:
+                    raise RuntimeError("缺少 IMAP access token")
+                connection, _ = self._open_imap_oauth(self._imap_access_token)
+            else:
+                connection, _ = self._open_imap_password()
+            for canonical, candidates in self._imap_folder_candidates(folder):
+                selected = False
+                for mailbox in candidates:
+                    try:
+                        status, _ = connection.select(mailbox, readonly=True)
+                    except Exception:
+                        continue
+                    if status == "OK":
+                        selected = True
+                        break
+                if not selected:
+                    continue
+                status, data = connection.uid("search", None, "ALL")
+                if status != "OK" or not data or not data[0]:
+                    continue
+                ids = data[0].split()
+                total += len(ids)
+                if folder == "all":
+                    selected_ids = list(reversed(ids[-scan_cap:]))
+                else:
+                    start = max(0, len(ids) - page * page_size)
+                    end = max(0, len(ids) - (page - 1) * page_size)
+                    selected_ids = list(reversed(ids[start:end]))
+                for message_id in selected_ids:
+                    self._check_cancelled()
+                    try:
+                        status, payload = connection.uid("fetch", message_id, "(FLAGS RFC822)")
+                        if status != "OK" or not payload:
+                            continue
+                        raw = next(
+                            (item[1] for item in payload if isinstance(item, tuple) and len(item) > 1 and isinstance(item[1], bytes)),
+                            b"",
+                        )
+                        if raw:
+                            metadata = b" ".join(
+                                item[0]
+                                for item in payload
+                                if isinstance(item, tuple) and item and isinstance(item[0], bytes)
+                            )
+                            records.append(
+                                self._imap_record(
+                                    raw,
+                                    folder=canonical,
+                                    message_id=message_id,
+                                    is_read=b"\\Seen" in metadata,
+                                )
+                            )
+                    except Exception:
+                        continue
+        finally:
+            self._close_imap(connection)
+
+        records.sort(key=lambda item: float(item.get("received_ts") or 0), reverse=True)
+        if folder == "all":
+            offset = (page - 1) * page_size
+            items = records[offset : offset + page_size]
+        else:
+            items = records[:page_size]
+        for item in items:
+            item.pop("received_ts", None)
+        return {
+            "items": items,
+            "total": total,
+            "total_exact": True,
+            "has_more": page * page_size < total,
+        }
+
+    def _graph_record(self, item: dict[str, Any], *, folder: str) -> dict[str, Any]:
+        subject = str(item.get("subject") or "(无主题)")
+        sender = str((((item.get("from") or {}).get("emailAddress") or {}).get("address") or ""))
+        recipients = ", ".join(
+            str(((recipient.get("emailAddress") or {}).get("address") or ""))
+            for recipient in (item.get("toRecipients") or [])
+            if isinstance(recipient, dict)
+        )
+        body = self._plain_text((item.get("body") or {}).get("content") or item.get("bodyPreview") or "")[:100_000]
+        timestamp = self._timestamp(item.get("receivedDateTime"))
+        return {
+            "id": str(item.get("id") or ""),
+            "folder": folder,
+            "subject": subject,
+            "sender": sender,
+            "recipient": recipients,
+            "received_at": timeutil.timestamp_display(timestamp) if timestamp else "",
+            "preview": self._plain_text(item.get("bodyPreview") or body)[:300],
+            "body": body,
+            "code": self._extract_code(f"{subject}\n{body}"),
+            "is_read": bool(item.get("isRead")),
+        }
+
+    def _list_graph_messages(self, *, folder: str, page: int, page_size: int) -> dict[str, Any]:
+        if not self._graph_access_token:
+            raise RuntimeError("缺少 Graph access token")
+        graph_folder = {"junk": "junkemail", "deleted": "deleteditems"}.get(folder, folder)
+        if folder == "all":
+            url = "https://graph.microsoft.com/v1.0/me/messages"
+        else:
+            url = f"https://graph.microsoft.com/v1.0/me/mailFolders/{graph_folder}/messages"
+        response = self._request(
+            "GET",
+            url,
+            params={
+                "$top": page_size,
+                "$skip": (page - 1) * page_size,
+                "$select": "id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,body",
+                "$orderby": "receivedDateTime desc",
+            },
+            headers={
+                "Authorization": f"Bearer {self._graph_access_token}",
+                "Accept": "application/json",
+                "Prefer": "outlook.body-content-type='text'",
+            },
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status >= 400:
+            raise RuntimeError(f"Graph 邮件读取失败: HTTP {status}")
+        try:
+            payload = response.json() if getattr(response, "content", b"") else {}
+        except Exception as exc:
+            raise RuntimeError(f"Graph 邮件响应无效: {exc}") from exc
+        values = [item for item in (payload.get("value") or []) if isinstance(item, dict)]
+        items = [self._graph_record(item, folder=folder) for item in values]
+        has_more = bool(payload.get("@odata.nextLink")) or len(items) >= page_size
+        return {
+            "items": items,
+            "total": (page - 1) * page_size + len(items) + (1 if has_more else 0),
+            "total_exact": False,
+            "has_more": has_more,
+        }
+
+    def list_messages(self, *, folder: str = "all", page: int = 1, page_size: int = 30) -> dict[str, Any]:
+        folder = str(folder or "all").strip().lower()
+        if folder not in {"all", "inbox", "junk", "deleted", "archive"}:
+            raise ValueError("未知邮件文件夹")
+        page = max(1, int(page or 1))
+        page_size = max(1, min(int(page_size or 30), 100))
+        detected = self.detect()
+        if detected.get("health") != "ok":
+            raise RuntimeError(str(detected.get("reason") or "邮箱连接失败"))
+        if detected.get("protocol") == "imap":
+            result = self._list_imap_messages(folder=folder, page=page, page_size=page_size)
+        else:
+            result = self._list_graph_messages(folder=folder, page=page, page_size=page_size)
+        return {
+            **result,
+            "email": self.account["email"],
+            "folder": folder,
+            "page": page,
+            "page_size": page_size,
+            "protocol": detected.get("protocol"),
+            "provider": detected.get("provider"),
+            "checked_at": detected.get("checked_at"),
+            "latency_ms": detected.get("latency_ms"),
+            "_refresh_token": detected.get("_refresh_token") or "",
+        }
 
     @staticmethod
     def _timestamp(value: Any) -> float:
@@ -928,8 +1246,7 @@ class MailToolManager:
         if not parsed.records:
             detail = parsed.issues[0]["error"] if parsed.issues else "没有有效邮箱"
             raise ValueError(detail)
-        normalized = "\n".join(record.normalized_line() for record in parsed.records) + "\n"
-        result = store.import_mail_credentials(normalized, mode=mode)
+        result = _import_managed_credentials(parsed.records, mode=mode)
         if mode == "replace":
             with self._lock:
                 self._results = {}
@@ -983,7 +1300,7 @@ class MailToolManager:
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
-        accounts = store.read_mail_credentials()
+        accounts = _read_managed_credentials()
         with self._lock:
             results = {email: dict(row) for email, row in self._results.items()}
         items = [
@@ -1023,8 +1340,67 @@ class MailToolManager:
             "page_size": page_size,
             "total_pages": total_pages,
             "metrics": metrics,
-            "path": str(store.mail_file()),
+            "path": str(MAIL_TOOL_CREDENTIALS_PATH),
         }
+
+    def delete_accounts(self, emails: list[str]) -> int:
+        self.ensure_idle()
+        wanted = {str(email).strip().lower() for email in emails if str(email).strip()}
+        deleted = _delete_managed_credentials(wanted)
+        if deleted:
+            self.forget(wanted)
+        return deleted
+
+    def list_messages(
+        self,
+        *,
+        email: str,
+        folder: str = "all",
+        page: int = 1,
+        page_size: int = 30,
+        proxy_mode: str = "direct",
+    ) -> dict[str, Any]:
+        email_key = str(email or "").strip().lower()
+        if not email_key:
+            raise ValueError("请选择邮箱")
+        accounts = _read_managed_credentials({email_key})
+        if not accounts:
+            raise KeyError(email_key)
+
+        account = accounts[0]
+        probe = MicrosoftMailboxProbe(
+            account,
+            proxy=self._resolve_proxy(proxy_mode),
+        )
+        result = probe.list_messages(folder=folder, page=page, page_size=page_size)
+        rotated = str(result.pop("_refresh_token", "") or "")
+        if rotated:
+            _update_managed_refresh_token(
+                account["email"],
+                rotated,
+                expected=str(account.get("token") or ""),
+            )
+
+        checked_at = str(result.get("checked_at") or "")
+        with self._lock:
+            previous = dict(self._results.get(email_key, {}))
+            previous.update(
+                {
+                    "email": email_key,
+                    "protocol": result.get("protocol") or "unknown",
+                    "provider": result.get("provider") or "",
+                    "health": "ok",
+                    "reason": f"邮件读取成功，共返回 {len(result.get('items') or [])} 封",
+                    "checked_at": checked_at,
+                    "latency_ms": result.get("latency_ms"),
+                }
+            )
+            self._results[email_key] = previous
+        self._save_state()
+
+        if checked_at:
+            result["checked_at"] = timeutil.iso_to_beijing_display(checked_at)
+        return result
 
     @staticmethod
     def _resolve_proxy(mode: str) -> str:
@@ -1047,7 +1423,7 @@ class MailToolManager:
         if action not in {"detect", "code"}:
             raise ValueError("未知邮箱任务")
         selected = {str(email).strip().lower() for email in (emails or []) if str(email).strip()}
-        accounts = store.read_mail_credentials(selected or None)
+        accounts = _read_managed_credentials(selected or None)
         if not accounts:
             raise ValueError("没有可检测的邮箱")
         workers = max(1, min(int(workers or 4), 8, len(accounts)))
@@ -1133,10 +1509,10 @@ class MailToolManager:
                         }
                     rotated = str(result.pop("_refresh_token", "") or "")
                     if rotated:
-                        store.update_mail_refresh_token(
+                        _update_managed_refresh_token(
                             account["email"],
                             rotated,
-                            expected_refresh_token=str(account.get("token") or ""),
+                            expected=str(account.get("token") or ""),
                         )
                     email = str(result.get("email") or account["email"]).lower()
                     with self._lock:

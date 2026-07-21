@@ -300,7 +300,6 @@ def create_app() -> FastAPI:
         mode = str(body.get("mode") or "append")
         if not text.strip():
             raise ValueError("请提供凭证内容")
-        mail_tool_manager.ensure_idle()
         return store.import_mail_credentials(text, mode=mode)
 
     @app.delete("/api/mail-credentials")
@@ -309,7 +308,6 @@ def create_app() -> FastAPI:
         emails = body.get("emails") or []
         if not emails:
             raise ValueError("请选择邮箱凭证")
-        mail_tool_manager.ensure_idle()
         return {"deleted": store.delete_mail_credentials(list(emails))}
 
     @app.get("/api/config")
@@ -594,11 +592,21 @@ def create_app() -> FastAPI:
         emails = [str(email).strip() for email in (body.get("emails") or []) if str(email).strip()]
         if not emails:
             raise ValueError("请选择邮箱")
-        mail_tool_manager.ensure_idle()
-        deleted = store.delete_mail_credentials(emails)
-        if deleted:
-            mail_tool_manager.forget(emails)
+        deleted = mail_tool_manager.delete_accounts(emails)
         return {"deleted": deleted}
+
+    @app.post("/api/tools/mail/messages")
+    async def tools_mail_messages(request: Request) -> JSONResponse:
+        body = await request.json()
+        result = await asyncio.to_thread(
+            mail_tool_manager.list_messages,
+            email=str(body.get("email") or ""),
+            folder=str(body.get("folder") or "all"),
+            page=int(body.get("page") or 1),
+            page_size=int(body.get("page_size") or 30),
+            proxy_mode=str(body.get("proxy_mode") or "direct"),
+        )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/tools/mail/check/status")
     def tools_mail_check_status() -> dict[str, Any]:
