@@ -36,7 +36,7 @@ if [[ "$DEPLOY_CLIPROXY" == "1" ]]; then
   [[ -f "$CLIPROXY_MANAGEMENT_ENV" ]] || { echo "ERROR: CLIProxyAPI management environment not found" >&2; exit 1; }
 fi
 
-for command in curl flock jq rsync systemctl tar; do
+for command in curl flock rsync systemctl tar; do
   command -v "$command" >/dev/null || { echo "ERROR: required command not found: ${command}" >&2; exit 1; }
 done
 
@@ -139,6 +139,8 @@ DEPLOY_APPLIED=1
 rsync -a "$STAGING_DIR/" "$DEPLOY_PATH/"
 cd "$DEPLOY_PATH"
 "$UV_BIN" sync --frozen
+PYTHON_BIN="$DEPLOY_PATH/.venv/bin/python"
+[[ -x "$PYTHON_BIN" ]] || { echo "ERROR: deployment Python environment was not created" >&2; exit 1; }
 
 if [[ "$DEPLOY_CLIPROXY" == "1" ]]; then
   cp -p "$CLIPROXY_DEPLOY_PATH/cli-proxy-api" "$CLIPROXY_BACKUP"
@@ -170,21 +172,37 @@ EOF
   if [[ -f "$DEPLOY_PATH/config.json" ]]; then
     cp -p "$DEPLOY_PATH/config.json" "$WEBUI_CONFIG_BACKUP"
     config_tmp="$(mktemp "$DEPLOY_PATH/.config.json.deploy.XXXXXX")"
-    jq \
-      '.cpa_pool_cli_management_enabled = true
-       | .cpa_pool_cli_management_url = "http://127.0.0.1:8317/v0/management"
-       | .cpa_pool_probe_proxy = "direct"
-       | .cpa_pool_scan_interval_sec = 86400
-       | .cpa_pool_healthy_check_interval_sec = 86400
-       | .cpa_pool_scheduler_tick_sec = 300
-       | .cpa_pool_adaptive_batch_size = 200
-       | .cpa_pool_refill_target_active = 2500
-       | .cpa_pool_reserve_target_percent = 10
-       | .cpa_pool_refill_max_inventory = 4000
-       | .cpa_pool_refill_low_water_rounds = 2
-       | .cpa_pool_refill_min_baseline_percent = 100
-       | .cpa_pool_refill_cooling_grace_sec = 86400' \
-      "$DEPLOY_PATH/config.json" >"$config_tmp"
+    "$PYTHON_BIN" - "$DEPLOY_PATH/config.json" "$config_tmp" <<'PY'
+import json
+import sys
+
+source, destination = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    config = json.load(handle)
+if not isinstance(config, dict):
+    raise TypeError("config.json must contain a JSON object")
+
+config.update(
+    {
+        "cpa_pool_cli_management_enabled": True,
+        "cpa_pool_cli_management_url": "http://127.0.0.1:8317/v0/management",
+        "cpa_pool_probe_proxy": "direct",
+        "cpa_pool_scan_interval_sec": 86400,
+        "cpa_pool_healthy_check_interval_sec": 86400,
+        "cpa_pool_scheduler_tick_sec": 300,
+        "cpa_pool_adaptive_batch_size": 200,
+        "cpa_pool_refill_target_active": 2500,
+        "cpa_pool_reserve_target_percent": 10,
+        "cpa_pool_refill_max_inventory": 4000,
+        "cpa_pool_refill_low_water_rounds": 2,
+        "cpa_pool_refill_min_baseline_percent": 100,
+        "cpa_pool_refill_cooling_grace_sec": 86400,
+    }
+)
+with open(destination, "w", encoding="utf-8") as handle:
+    json.dump(config, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+PY
     chmod --reference="$DEPLOY_PATH/config.json" "$config_tmp"
     mv -f "$config_tmp" "$DEPLOY_PATH/config.json"
     WEBUI_CONFIG_APPLIED=1
@@ -228,7 +246,30 @@ EOF
   curl --noproxy '*' --fail --silent --show-error --max-time 30 \
     -H "Authorization: Bearer ${management_key}" \
     http://127.0.0.1:8317/v0/management/auth-files >"$auth_snapshot"
-  xai_loaded="$(jq '[.files[] | select((.provider == "xai") or (.type == "xai") or (.name | startswith("xai-")))] | length' "$auth_snapshot")"
+  xai_loaded="$("$PYTHON_BIN" - "$auth_snapshot" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+files = payload.get("files") if isinstance(payload, dict) else None
+if not isinstance(files, list):
+    raise TypeError("CLIProxyAPI auth-files response is missing the files list")
+
+print(
+    sum(
+        1
+        for item in files
+        if isinstance(item, dict)
+        and (
+            str(item.get("provider", "")).lower() == "xai"
+            or str(item.get("type", "")).lower() == "xai"
+            or str(item.get("name", "")).lower().startswith("xai-")
+        )
+    )
+)
+PY
+)"
   rm -f "$auth_snapshot"
   [[ "$xai_loaded" =~ ^[0-9]+$ && "$xai_loaded" -gt 0 ]] || { echo "ERROR: CLIProxyAPI loaded no xAI auth files" >&2; exit 1; }
   echo "CLIProxyAPI healthy: xai_loaded=${xai_loaded}"
@@ -262,19 +303,49 @@ if [[ "$DEPLOY_CLIPROXY" == "1" ]]; then
   for _ in $(seq 1 30); do
     if curl --noproxy '*' --fail --silent --show-error --max-time 10 \
       "$pool_status_url" >"$pool_status" \
-      && jq -e '.pool.runtime_connected == true and (.pool.cli_loaded | tonumber) > 0' "$pool_status" >/dev/null; then
+      && "$PYTHON_BIN" - "$pool_status" <<'PY' >/dev/null; then
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+pool = payload.get("pool") if isinstance(payload, dict) else None
+if not isinstance(pool, dict) or pool.get("runtime_connected") is not True:
+    raise SystemExit(1)
+try:
+    loaded = int(pool.get("cli_loaded", 0))
+except (TypeError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if loaded > 0 else 1)
+PY
       pool_linked=1
       break
     fi
     sleep 2
   done
   if [[ $pool_linked -ne 1 ]]; then
-    jq '{runtime_connected:.pool.runtime_connected,cli_loaded:.pool.cli_loaded,runtime_error:.pool.runtime_error}' "$pool_status" >&2 || true
+    "$PYTHON_BIN" - "$pool_status" runtime_connected cli_loaded runtime_error <<'PY' >&2 || true
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+pool = payload.get("pool") if isinstance(payload, dict) else {}
+print(json.dumps({key: pool.get(key) for key in sys.argv[2:]}, ensure_ascii=False))
+PY
     rm -f "$pool_status"
     echo "ERROR: WebUI did not connect to CLIProxyAPI management API" >&2
     false
   fi
-  jq '{runtime_connected:.pool.runtime_connected,cli_loaded:.pool.cli_loaded,file_inventory:.pool.file_inventory}' "$pool_status"
+  "$PYTHON_BIN" - "$pool_status" runtime_connected cli_loaded file_inventory <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+pool = payload.get("pool") if isinstance(payload, dict) else {}
+print(json.dumps({key: pool.get(key) for key in sys.argv[2:]}, ensure_ascii=False))
+PY
   rm -f "$pool_status"
 fi
 
