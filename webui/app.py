@@ -221,6 +221,10 @@ def create_app() -> FastAPI:
             page_size=page_size,
         )
 
+    @app.get("/api/cpa/pool/actions")
+    def cpa_pool_actions(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
+        return cpa_pool_monitor.list_actions(limit=limit)
+
     @app.post("/api/cpa/pool/scan")
     async def cpa_pool_scan(request: Request) -> JSONResponse:
         raw = await request.body()

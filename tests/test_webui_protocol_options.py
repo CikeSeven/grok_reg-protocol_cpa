@@ -50,12 +50,14 @@ class WebuiProtocolOptionTests(unittest.TestCase):
                     "mint_workers": -1,
                     "protocol_register": True,
                     "protocol_no_browser_fallback": True,
+                    "source": "cpa_pool_auto_refill",
                 }
             )
 
         opts = payload["options"]
         self.assertIs(opts["protocol_register"], True)
         self.assertIs(opts["protocol_no_browser_fallback"], True)
+        self.assertEqual(opts["source"], "cpa_pool_auto_refill")
 
     def test_public_config_includes_default_protocol_solver_pass_proxy(self):
         cfg = store.public_config({})

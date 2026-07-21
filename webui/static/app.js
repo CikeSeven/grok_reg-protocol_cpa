@@ -26,6 +26,7 @@ const state = {
   cpaScanHistoryTotal: 0,
   cpaScanHistoryQuery: "",
   cpaScanHistoryOutcome: "all",
+  cpaActions: [],
   cpaQuarantine: [],
   cpaQuarantineQuery: "",
   cpaQuarantineBucket: "all",
@@ -107,6 +108,18 @@ const statusText = {
   interrupted: "已中断",
   idle: "空闲",
   quota: "额度/冷却",
+  account_quota: "额度耗尽",
+  upstream_busy: "上游繁忙",
+  transient_error: "临时异常",
+  request_error: "请求异常",
+  invalid_auth: "认证失效",
+  malformed: "文件损坏",
+  healthy: "健康",
+  main: "主力池",
+  reserve: "备用池",
+  candidate: "候选池",
+  observe: "观察池",
+  quarantine: "隔离池",
   soft_fail: "软失败",
   hard_bad: "硬坏",
   refresh_failed: "续期失败",
@@ -129,9 +142,10 @@ const mailStatusPill = {
 };
 
 function cpaPoolPill(status) {
-  if (status === "ok") return "ok";
-  if (status === "quota" || status === "cooling" || status === "soft_fail" || status === "probe_failed") return "warn";
-  if (status === "disabled" || status === "unchecked") return "idle";
+  if (status === "ok" || status === "healthy" || status === "main") return "ok";
+  if (["quota", "account_quota", "cooling", "soft_fail", "probe_failed", "transient_error", "upstream_busy", "observe"].includes(status)) return "warn";
+  if (["disabled", "unchecked", "candidate", "manual_disabled"].includes(status)) return "idle";
+  if (status === "reserve") return "info";
   if (status === "running") return "running";
   if (!status) return "idle";
   return "err";
@@ -243,7 +257,17 @@ const CONFIG_FIELDS = {
     ["cpa_probe_after_write", "写出后 probe models", "bool"],
     ["cpa_probe_chat", "写出后 probe chat", "bool"],
     ["cpa_pool_auto_scan", "CPA 号池自动巡检", "bool"],
-    ["cpa_pool_scan_interval_sec", "号池巡检周期秒(86400=24h)", "number"],
+    ["cpa_pool_scan_interval_sec", "旧版健康复检周期", "number"],
+    ["cpa_pool_scheduler_tick_sec", "调度器唤醒秒", "number"],
+    ["cpa_pool_adaptive_batch_size", "自适应单批账号数", "number"],
+    ["cpa_pool_healthy_check_interval_sec", "健康账号复检秒", "number"],
+    ["cpa_pool_observe_check_interval_sec", "观察账号复检秒", "number"],
+    ["cpa_pool_candidate_check_interval_sec", "候选账号复检秒", "number"],
+    ["cpa_pool_independent_failure_interval_sec", "独立失败最小间隔秒", "number"],
+    ["cpa_pool_recovery_success_threshold", "恢复所需连续成功", "number"],
+    ["cpa_pool_chat_sample_percent", "健康账号 Chat 抽样百分比", "number"],
+    ["cpa_pool_models_probe_rate_per_sec", "Models 每秒探测数", "number"],
+    ["cpa_pool_chat_probe_rate_per_sec", "Chat 每秒探测数", "number"],
     ["cpa_pool_scan_workers", "号池巡检并发", "number"],
     ["cpa_pool_probe_timeout_sec", "号池 probe 超时秒", "number"],
     ["cpa_pool_probe_chat", "号池默认 probe chat", "bool"],
@@ -253,12 +277,26 @@ const CONFIG_FIELDS = {
     ["cpa_pool_probe_proxy", "号池 probe 代理(direct/pool)", "proxy"],
     ["cpa_pool_history_limit", "每号巡检历史条数", "number"],
     ["cpa_pool_scan_history_limit", "整轮巡检历史条数", "number"],
+    ["cpa_pool_observation_retention_days", "巡检明细保留天数", "number"],
+    ["cpa_pool_governance_action_retention_days", "治理记录保留天数", "number"],
+    ["cpa_pool_breaker_window_sec", "熔断统计窗口秒", "number"],
+    ["cpa_pool_breaker_min_samples", "熔断最少样本", "number"],
+    ["cpa_pool_breaker_min_errors", "熔断最少同类错误", "number"],
+    ["cpa_pool_breaker_error_ratio", "熔断错误比例", "number"],
+    ["cpa_pool_breaker_open_sec", "熔断保持秒", "number"],
     ["cpa_pool_apply_policy", "号池自动治理", "bool"],
     ["cpa_pool_auto_refill", "号池自动补号（含注册）", "bool"],
     ["cpa_pool_refill_target_active", "补 CPA 目标存量(0保持巡检前)", "number"],
     ["cpa_pool_refill_max_per_scan", "单轮最多自动补 CPA", "number"],
     ["cpa_pool_refill_workers", "自动补 CPA workers", "number"],
     ["cpa_pool_refill_probe_chat", "自动补 CPA probe chat", "bool"],
+    ["cpa_pool_refill_max_inventory", "最大在线库存", "number"],
+    ["cpa_pool_refill_low_water_hold_sec", "低水位持续秒", "number"],
+    ["cpa_pool_refill_low_water_rounds", "连续低水位轮数", "number"],
+    ["cpa_pool_refill_min_baseline_percent", "补号所需基线百分比", "number"],
+    ["cpa_pool_refill_cooling_grace_sec", "短期冷却保护秒", "number"],
+    ["cpa_pool_refill_expected_yield_percent", "预计补号成功率百分比", "number"],
+    ["cpa_pool_refill_daily_limit", "每日最多启动补号", "number"],
     ["cpa_pool_quarantine_dir", "号池隔离区目录", "text"],
     ["cpa_pool_move_with_backup", "隔离写 meta 记录", "bool"],
     ["cpa_pool_hard_bad_threshold", "硬坏阈值", "number"],
@@ -268,6 +306,17 @@ const CONFIG_FIELDS = {
     ["cpa_pool_soft_fail_threshold", "软失败阈值", "number"],
     ["cpa_pool_quota_threshold", "额度冷却阈值", "number"],
     ["cpa_pool_quota_cooldown_sec", "额度禁用冷却秒", "number"],
+    ["cpa_pool_governance_max_downgrades_per_scan", "单轮最大降级账号", "number"],
+    ["cpa_pool_governance_max_downgrade_percent", "单轮最大降级百分比", "number"],
+    ["cpa_pool_main_low_water_percent", "主力池低水位百分比", "number"],
+    ["cpa_pool_reserve_target_percent", "备用池目标百分比", "number"],
+    ["cpa_pool_cli_management_enabled", "CLI 管理 API 联动", "bool"],
+    ["cpa_pool_cli_management_url", "CLI 管理 API 地址", "text"],
+    ["cpa_pool_cli_management_key", "CLI 管理密钥", "password"],
+    ["cpa_pool_cli_management_timeout_sec", "CLI 管理请求超时秒", "number"],
+    ["cpa_pool_cli_management_cache_sec", "CLI 状态缓存秒", "number"],
+    ["cpa_pool_file_fallback_enabled", "管理 API 异常时文件回退", "bool"],
+    ["cpa_pool_file_fallback_grace_sec", "文件回退宽限秒", "number"],
     ["cpa_pool_hard_bad_action", "硬坏动作", "policy_action"],
     ["cpa_pool_refresh_failed_action", "续期失败动作", "policy_action"],
     ["cpa_pool_invalid_action", "无效文件动作", "policy_action"],
@@ -670,15 +719,21 @@ function renderCpa() {
     const selected = state.selectedCpa.has(row.email);
     const scan = state.cpaPoolMap.get(String(row.email || "").toLowerCase()) || {};
     const scanStatus = scan.status || row.scan_status || "";
+    const healthStatus = scan.health_status || row.health_status || scanStatus || "unchecked";
+    const tier = scan.tier || row.pool_tier || "candidate";
     const scanReason = scan.reason || row.scan_reason || "";
-    const scanPill = scanStatus
-      ? `<span class="pill ${cpaPoolPill(scanStatus)}" title="${esc(scanReason)}">${esc(statusText[scanStatus] || scanStatus)}</span>`
-      : '<span class="pill idle">未巡检</span>';
+    const tierPill = `<span class="pill ${cpaPoolPill(tier)}">${esc(statusText[tier] || tier)}</span>`;
+    const scanPill = `<span class="pill ${cpaPoolPill(healthStatus)}" title="${esc(scanReason)}">${esc(statusText[healthStatus] || healthStatus)}</span>`;
     const expires = scan.expired || row.expired || "-";
     const refreshMark = scan.refreshed ? '<span class="chip">已续期</span>' : "";
     const actionMark = scan.action ? `<span class="chip">${esc(scan.action)}</span>` : "";
     const streak = scan.status_streak ? ` · 连续 ${scan.status_streak}` : "";
     const cool = scan.cool_until ? ` · 冷却到 ${scan.cool_until}` : "";
+    const desiredPriority = scan.desired_priority ?? row.desired_priority;
+    const actualPriority = scan.actual_priority ?? row.actual_priority;
+    const actualDisabled = scan.actual_disabled ?? row.actual_disabled;
+    const scheduleText = `${actualPriority == null ? "-" : `P${actualPriority}`} → ${desiredPriority == null ? "-" : `P${desiredPriority}`}`;
+    const disabledText = actualDisabled == null ? "未同步" : (actualDisabled ? "已禁用" : "可路由");
     const tr = document.createElement("tr");
     if (selected) tr.classList.add("selected");
     const locPill = row.location === "hotload"
@@ -692,7 +747,8 @@ function renderCpa() {
       </div></td>
       <td><span class="mono">${esc(row.mint_method || "-")}</span></td>
       <td>${locPill}</td>
-      <td><div class="scan-cell">${scanPill}${refreshMark}${actionMark}<small>${esc((scan.reason || "") + streak + cool)}</small></div></td>
+      <td><div class="scan-cell"><span class="status-pair">${tierPill}${scanPill}</span>${refreshMark}${actionMark}<small>${esc((scan.reason || "") + streak + cool)}</small></div></td>
+      <td><span class="mono">${esc(scheduleText)}</span><small class="table-sub">${esc(disabledText)}</small></td>
       <td><span class="mono">${esc(expires)}</span></td>
       <td><span class="mono">${esc(row.mtime_iso || "-")}</span></td>
       <td class="c-actions"><button class="link" data-download-cpa="${esc(row.email)}" type="button">下载</button></td>
@@ -719,6 +775,7 @@ async function loadCpa() {
     loadCpaPoolStatus().catch(() => null),
     loadCpaPoolResults().catch(() => null),
     loadCpaScanHistory().catch(() => null),
+    loadCpaActions().catch(() => null),
     loadCpaQuarantine().catch(() => null),
   ]);
   state.cpa = data.items || [];
@@ -736,6 +793,7 @@ function renderCpaPoolStatus() {
   const progress = data.progress || {};
   const settings = data.settings || {};
   const refill = s.refill || {};
+  const pool = data.pool || {};
   const running = Boolean(data.running);
   const resumed = running && Boolean(data.resumed);
   const total = Number(data.cpa_total ?? s.total ?? 0);
@@ -747,15 +805,28 @@ function renderCpaPoolStatus() {
   $("#cpa-pool-state").textContent = running ? (resumed ? "恢复巡检中" : "巡检中") : (s.finished_at || data.finished_at ? "已完成" : "未巡检");
   $("#cpa-pool-stop").disabled = !running;
   $("#cpa-pool-scan").disabled = running;
-  $("#cpa-pool-total").textContent = total;
-  $("#cpa-pool-ok").textContent = counts.ok || data.ok || 0;
-  $("#cpa-pool-quota").textContent = counts.quota || data.quota || 0;
-  $("#cpa-pool-bad").textContent = data.bad || 0;
-  $("#cpa-pool-refreshed").textContent = s.refreshed || 0;
-  $("#cpa-pool-results").textContent = data.results_total || 0;
-  $("#cpa-pool-quarantine").textContent = data.quarantine_total || 0;
+  $("#cpa-pool-total").textContent = pool.file_inventory ?? total;
+  $("#cpa-pool-cli-loaded").textContent = pool.cli_loaded == null ? "-" : pool.cli_loaded;
+  $("#cpa-pool-ok").textContent = pool.main_routeable ?? data.ok ?? 0;
+  $("#cpa-pool-reserve").textContent = pool.reserve ?? 0;
+  $("#cpa-pool-observe").textContent = Number(pool.candidate || 0) + Number(pool.observe || 0);
+  $("#cpa-pool-quota").textContent = pool.cooling ?? data.quota ?? 0;
+  $("#cpa-pool-quarantine").textContent = pool.quarantine ?? data.quarantine_total ?? 0;
+  const upstreamOpen = (pool.upstream_state || data.upstream_state) === "open";
+  $("#cpa-pool-upstream").textContent = upstreamOpen ? "熔断" : "正常";
+  $("#cpa-pool-upstream-kpi").className = `pool-kpi ${upstreamOpen ? "err" : "ok"}`;
+  const breaker = (pool.breakers || []).find((item) => item.state === "open" || item.state === "half_open");
+  $("#cpa-pool-breaker").hidden = !breaker;
+  if (breaker) {
+    $("#cpa-pool-breaker-detail").textContent = `${breaker.scope || "upstream"} · ${breaker.error_count || 0}/${breaker.sample_count || 0} · ${breaker.reason || "-"}`;
+  }
+  const refillState = refill.waiting_for_baseline
+    ? `基线${refill.baseline_percent || 0}%`
+    : (refill.waiting_for_rounds
+      ? `${refill.low_rounds || 0}/${refill.required_low_rounds || 0}轮`
+      : (refill.waiting_for_stability ? "观察" : (refill.need ? `待${refill.need}` : "ON")));
   $("#cpa-pool-refill").textContent = refill.enabled
-    ? (refill.started ? `+${refill.limit || refill.need || 0}` : (refill.need ? `待${refill.need}` : "ON"))
+    ? (refill.started ? `+${refill.limit || refill.need || 0}` : refillState)
     : (settings.auto_refill ? "ON" : "OFF");
   $("#cpa-pool-progress").style.width = `${pct}%`;
   const next = data.next_scan_at_display
@@ -763,18 +834,24 @@ function renderCpaPoolStatus() {
     : (data.next_scan_in_sec != null ? `${data.next_scan_in_sec}s` : "-");
   const elapsed = s.elapsed_sec != null ? ` · 耗时 ${s.elapsed_sec}s` : "";
   const actions = s.actions ? Object.entries(s.actions).map(([k, v]) => `${k}:${v}`).join(" ") : "";
-  const refillSkip = refill.error ? `skip ${refill.error}` : `need=${refill.need || 0}`;
+  const refillPending = refill.waiting_for_baseline
+    ? `基线 ${refill.baseline_checked || 0}/${refill.baseline_total || 0}`
+    : (refill.waiting_for_rounds
+      ? `低水位 ${refill.low_rounds || 0}/${refill.required_low_rounds || 0}轮`
+      : (refill.waiting_for_stability
+        ? `稳定观察 ${refill.eligible_in_sec || 0}s`
+        : (refill.error || `待补 ${refill.need || 0}`)));
   const refillMeta = refill.enabled
     ? (refill.started
-      ? ` · 补号 <code>${esc(refill.strategy || "backfill")} need=${esc(refill.need || 0)} limit=${esc(refill.limit || 0)} candidates=${esc(refill.candidates || 0)} excluded=${esc(refill.excluded || 0)}</code>`
-      : ` · 补号 <code>${esc(refillSkip)}</code>`)
+      ? ` · 补号 <code>${esc(refill.strategy || "backfill")} gap=${esc(refill.gap || 0)} start=${esc(refill.limit || 0)}</code>`
+      : ` · 补号 <code>${esc(refillPending)}</code>`)
     : "";
   const resumeMeta = Number(data.resume_count || s.resume_count || 0) > 0
     ? ` · 任务恢复 <code>${esc(data.resume_count || s.resume_count)}次</code>`
     : "";
   $("#cpa-pool-meta").innerHTML =
     `进度 <b>${done}/${scanTotal || total}</b>${elapsed} · 下次自动检查 ${esc(next)} · ` +
-    `周期 <code>${esc(settings.scan_interval_sec || 300)}s</code> · ` +
+    `调度 <code>${esc(settings.scheduler_tick_sec || 300)}s</code> · 健康复检 <code>${esc(settings.healthy_check_interval_sec || 43200)}s</code> · ` +
     `proxy <code>${esc(settings.probe_proxy || "-")}</code> · ` +
     `自动巡检 <code>${settings.auto_scan ? "ON" : "OFF"}</code> · ` +
     `治理 <code>${settings.apply_policy ? "ON" : "OFF"}</code> · ` +
@@ -804,6 +881,7 @@ function renderCpaPoolStatus() {
       $("#cpa-pool-apply-policy").checked = Boolean(data.settings.apply_policy);
       $("#cpa-pool-auto-refill").checked = Boolean(data.settings.auto_refill);
       $("#cpa-pool-refill-target").value = data.settings.refill_target_active || 0;
+      $("#cpa-pool-refill-inventory").value = data.settings.refill_max_inventory || 4000;
       $("#cpa-pool-refill-max").value = data.settings.refill_max_per_scan || 30;
       $("#cpa-pool-refill-workers").value = data.settings.refill_workers ?? -1;
       $("#cpa-pool-refill-probe-chat").checked = Boolean(data.settings.refill_probe_chat);
@@ -871,6 +949,34 @@ async function loadCpaScanHistory() {
   state.cpaScanHistory = data.items || [];
   state.cpaScanHistoryTotal = data.total || 0;
   renderCpaScanHistory();
+  return data;
+}
+
+function renderCpaActions() {
+  const tbody = $("#cpa-action-rows");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+  const items = state.cpaActions || [];
+  $("#cpa-actions-empty").hidden = items.length > 0;
+  for (const row of items) {
+    const tr = document.createElement("tr");
+    const actionClass = ["disabled", "quarantined", "manual_disable", "manual_delete"].includes(row.action) ? "warn" : "ok";
+    tr.innerHTML = `
+      <td><span class="mono">${esc(row.action_at || "-")}</span></td>
+      <td><span class="cell-email" title="${esc(row.email || "")}">${esc(row.email || "-")}</span></td>
+      <td><span class="pill ${actionClass}">${esc(row.action || "-")}</span></td>
+      <td><span class="mono">${esc(row.old_state || "-")} → ${esc(row.new_state || "-")}</span></td>
+      <td><span class="table-clip" title="${esc(row.reason || "")}">${esc(row.reason || "-")}</span></td>
+      <td><span class="mono">${esc(row.result || "-")}</span></td>
+    `;
+    tbody.append(tr);
+  }
+}
+
+async function loadCpaActions() {
+  const data = await api("/api/cpa/pool/actions?limit=100");
+  state.cpaActions = data.items || [];
+  renderCpaActions();
   return data;
 }
 
@@ -1255,8 +1361,11 @@ const PAGE_SETTINGS = {
     groups: [
       ["CPA 导出", ["cpa_export_enabled", "cpa_prefer_protocol", "cpa_protocol_flow", "cpa_protocol_only", "cpa_allow_device_flow_fallback", "cpa_auth_dir", "cpa_copy_to_hotload", "cpa_hotload_dir", "cpa_base_url"]],
       ["Mint 执行", ["cpa_headless", "cpa_force_standalone", "cpa_mint_workers", "cpa_mint_queue_max", "cpa_mint_timeout_sec", "cpa_mint_cookie_inject", "cpa_gui_close_mint_browser", "cpa_mint_browser_reuse", "cpa_mint_browser_recycle_every", "cpa_probe_after_write", "cpa_probe_chat", "cpa_protocol_poll_timeout_sec"]],
-      ["号池巡检", ["cpa_pool_auto_scan", "cpa_pool_scan_interval_sec", "cpa_pool_scan_workers", "cpa_pool_probe_timeout_sec", "cpa_pool_probe_chat", "cpa_pool_refresh_before_probe", "cpa_pool_refresh_skew_sec", "cpa_pool_max_items_per_scan", "cpa_pool_probe_proxy", "cpa_pool_history_limit", "cpa_pool_scan_history_limit"]],
-      ["号池治理与补号", ["cpa_pool_apply_policy", "cpa_pool_auto_refill", "cpa_pool_refill_target_active", "cpa_pool_refill_max_per_scan", "cpa_pool_refill_workers", "cpa_pool_refill_probe_chat", "cpa_pool_quarantine_dir", "cpa_pool_move_with_backup", "cpa_pool_hard_bad_threshold", "cpa_pool_refresh_failed_threshold", "cpa_pool_invalid_threshold", "cpa_pool_no_grok45_threshold", "cpa_pool_soft_fail_threshold", "cpa_pool_quota_threshold", "cpa_pool_quota_cooldown_sec", "cpa_pool_hard_bad_action", "cpa_pool_refresh_failed_action", "cpa_pool_invalid_action", "cpa_pool_no_grok45_action", "cpa_pool_soft_fail_action", "cpa_pool_quota_action"]],
+      ["自适应巡检", ["cpa_pool_auto_scan", "cpa_pool_scheduler_tick_sec", "cpa_pool_adaptive_batch_size", "cpa_pool_scan_workers", "cpa_pool_probe_timeout_sec", "cpa_pool_refresh_before_probe", "cpa_pool_refresh_skew_sec", "cpa_pool_probe_proxy", "cpa_pool_healthy_check_interval_sec", "cpa_pool_observe_check_interval_sec", "cpa_pool_candidate_check_interval_sec", "cpa_pool_independent_failure_interval_sec", "cpa_pool_recovery_success_threshold", "cpa_pool_chat_sample_percent", "cpa_pool_models_probe_rate_per_sec", "cpa_pool_chat_probe_rate_per_sec", "cpa_pool_history_limit", "cpa_pool_scan_history_limit", "cpa_pool_observation_retention_days", "cpa_pool_governance_action_retention_days"]],
+      ["上游熔断", ["cpa_pool_breaker_window_sec", "cpa_pool_breaker_min_samples", "cpa_pool_breaker_min_errors", "cpa_pool_breaker_error_ratio", "cpa_pool_breaker_open_sec"]],
+      ["分层治理", ["cpa_pool_apply_policy", "cpa_pool_governance_max_downgrades_per_scan", "cpa_pool_governance_max_downgrade_percent", "cpa_pool_main_low_water_percent", "cpa_pool_reserve_target_percent", "cpa_pool_soft_fail_threshold", "cpa_pool_quota_cooldown_sec", "cpa_pool_quarantine_dir", "cpa_pool_move_with_backup"]],
+      ["容量与补号", ["cpa_pool_auto_refill", "cpa_pool_refill_target_active", "cpa_pool_refill_max_inventory", "cpa_pool_refill_low_water_hold_sec", "cpa_pool_refill_low_water_rounds", "cpa_pool_refill_min_baseline_percent", "cpa_pool_refill_cooling_grace_sec", "cpa_pool_refill_expected_yield_percent", "cpa_pool_refill_daily_limit", "cpa_pool_refill_max_per_scan", "cpa_pool_refill_workers", "cpa_pool_refill_probe_chat"]],
+      ["CLIProxy 联动", ["cpa_pool_cli_management_enabled", "cpa_pool_cli_management_url", "cpa_pool_cli_management_key", "cpa_pool_cli_management_timeout_sec", "cpa_pool_cli_management_cache_sec", "cpa_pool_file_fallback_enabled", "cpa_pool_file_fallback_grace_sec"]],
     ],
   },
 };
@@ -2362,11 +2471,14 @@ function bindEvents() {
     await loadCpaPoolStatus().catch((e) => toast(e.message, true));
     await loadCpaPoolResults().catch(() => {});
     await loadCpaScanHistory().catch(() => {});
+    await loadCpaActions().catch(() => {});
     await loadCpaQuarantine().catch(() => {});
     renderCpa();
   });
   $("#refresh-cpa-scan-history").addEventListener("click", () =>
     loadCpaScanHistory().catch((e) => toast(e.message, true)));
+  $("#refresh-cpa-actions").addEventListener("click", () =>
+    loadCpaActions().catch((e) => toast(e.message, true)));
   $("#cpa-scan-history-search").addEventListener("input", debounce((e) => {
     state.cpaScanHistoryQuery = e.target.value.trim();
     loadCpaScanHistory().catch((err) => toast(err.message, true));
@@ -2385,6 +2497,7 @@ function bindEvents() {
       apply_policy: $("#cpa-pool-apply-policy").checked,
       auto_refill: $("#cpa-pool-auto-refill").checked,
       refill_target_active: Number($("#cpa-pool-refill-target").value || 0),
+      refill_max_inventory: Number($("#cpa-pool-refill-inventory").value || 4000),
       refill_max_per_scan: Number($("#cpa-pool-refill-max").value || 30),
       refill_workers: Number($("#cpa-pool-refill-workers").value || -1),
       refill_probe_chat: $("#cpa-pool-refill-probe-chat").checked,

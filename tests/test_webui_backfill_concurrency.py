@@ -22,11 +22,19 @@ class WebuiBackfillConcurrencyTests(unittest.TestCase):
         runner = jobs.JobRunner()
         with mock.patch.object(jobs.threading.Thread, "start", lambda self: None):
             payload = runner.start_backfill(
-                {"emails": ["a@example.com"], "workers": 12, "probe": True, "probe_chat": False, "sleep": 0}
+                {
+                    "emails": ["a@example.com"],
+                    "workers": 12,
+                    "probe": True,
+                    "probe_chat": False,
+                    "sleep": 0,
+                    "source": "cpa_pool_auto_refill",
+                }
             )
 
         self.assertEqual(payload["options"]["workers"], 12)
         self.assertIs(payload["options"]["probe_chat"], False)
+        self.assertEqual(payload["options"]["source"], "cpa_pool_auto_refill")
 
     def test_backfill_config_workers_are_capped_conservatively(self):
         self.assertEqual(

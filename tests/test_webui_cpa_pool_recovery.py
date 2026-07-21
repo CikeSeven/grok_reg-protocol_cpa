@@ -70,6 +70,8 @@ class WebuiCpaPoolRecoveryTests(unittest.TestCase):
             }
         )
         settings.update(overrides)
+        if "scan_interval_sec" in overrides and "scheduler_tick_sec" not in overrides:
+            settings["scheduler_tick_sec"] = overrides["scan_interval_sec"]
         return settings
 
     def test_schedule_deadline_survives_monitor_restart(self):

@@ -20,6 +20,9 @@ proxies_state.json
 mail_credentials.txt
 cpa_pool_state.json
 .cpa_pool_state.json.*.tmp
+cpa_pool_state.sqlite3
+cpa_pool_state.sqlite3-wal
+cpa_pool_state.sqlite3-shm
 cpa_pool_scan.journal.jsonl
 mail_tool_state.json
 .mail_tool_state.json.tmp

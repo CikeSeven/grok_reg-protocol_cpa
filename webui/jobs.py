@@ -270,6 +270,7 @@ class JobRunner:
                 "protocol_no_browser_fallback": protocol_no_browser_fallback,
                 "proxy_mode": proxy_mode,
                 "proxy_fixed": proxy_fixed,
+                "source": str(options.get("source") or "").strip(),
             },
         )
         job.stats = {
@@ -307,6 +308,7 @@ class JobRunner:
                 "browser_only": browser_only,
                 "workers": workers,
                 "sleep": sleep_s,
+                "source": str(options.get("source") or "").strip(),
             },
         )
         job.stats = {"ok": 0, "fail": 0, "total": 0, "done": 0, "workers": 0}

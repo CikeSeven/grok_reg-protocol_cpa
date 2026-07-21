@@ -215,11 +215,26 @@ def list_cpa_index(config: dict[str, Any] | None = None) -> dict[str, dict[str, 
             email = ""
             mint_method = ""
             expired = ""
+            disabled = False
+            priority = 0
+            managed = False
+            managed_tier = ""
+            cool_until = ""
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 email = str(payload.get("email") or "").strip().lower()
                 mint_method = str(payload.get("mint_method") or payload.get("type") or "")
                 expired = str(payload.get("expired") or payload.get("expires_at") or "")
+                disabled = payload.get("disabled") is True
+                try:
+                    priority = int(payload.get("priority") or 0)
+                except (TypeError, ValueError):
+                    priority = 0
+                pool_meta = payload.get("_cpa_pool")
+                if isinstance(pool_meta, dict):
+                    managed = bool(pool_meta.get("managed"))
+                    managed_tier = str(pool_meta.get("tier") or pool_meta.get("status") or "").strip().lower()
+                    cool_until = str(pool_meta.get("cool_until") or "")
             except Exception:
                 payload = {}
             if not email:
@@ -233,6 +248,11 @@ def list_cpa_index(config: dict[str, Any] | None = None) -> dict[str, dict[str, 
                 "filename": path.name,
                 "mint_method": mint_method,
                 "expired": expired,
+                "disabled": disabled,
+                "priority": priority,
+                "pool_managed": managed,
+                "pool_tier": managed_tier,
+                "cool_until": cool_until,
                 "mtime": path.stat().st_mtime,
                 "location": "hotload" if hot and path.parent.resolve() == hot.resolve() else "auth_dir",
                 "size": path.stat().st_size,
@@ -388,12 +408,19 @@ def list_cpa(
 
         def _match_status(item: dict[str, Any]) -> bool:
             row_status = _row_scan_status(item)
+            email = str(item.get("email") or "").lower()
+            result = scan_results.get(email) or {}
+            tier = str(result.get("tier") or "candidate").strip().lower()
             if st == "unchecked":
                 return row_status == "unchecked"
             if st == "quota":
-                return row_status in {"quota", "cooling"}
+                return row_status in {"quota", "account_quota", "cooling"} or tier == "cooling"
             if st == "bad":
-                return row_status not in {"ok", "quota", "cooling", "unchecked"}
+                return row_status not in {"ok", "quota", "account_quota", "cooling", "upstream_busy", "unchecked"}
+            if st in {"main", "reserve", "candidate", "observe", "cooling", "quarantine", "manual_disabled"}:
+                return tier == st
+            if st == "upstream_busy":
+                return str(result.get("health_status") or row_status) == "upstream_busy"
             return row_status == st
 
         items = [item for item in items if _match_status(item)]
@@ -413,6 +440,12 @@ def list_cpa(
         row["scan_reason"] = str(scan.get("reason") or "")
         row["scan_checked_at"] = str(scan.get("checked_at") or "")
         row["scan_action"] = str(scan.get("action") or "")
+        row["pool_tier"] = str(scan.get("tier") or "candidate")
+        row["health_status"] = str(scan.get("health_status") or row["scan_status"])
+        row["confidence"] = int(scan.get("confidence") or 0)
+        row["desired_priority"] = scan.get("desired_priority")
+        row["actual_priority"] = scan.get("actual_priority")
+        row["actual_disabled"] = scan.get("actual_disabled")
         row["expired"] = timeutil.iso_to_beijing_display(row.get("expired")) or row.get("expired", "")
         row["scan_checked_at"] = timeutil.iso_to_beijing_display(row.get("scan_checked_at")) or row.get("scan_checked_at", "")
         row["mtime_iso"] = timeutil.timestamp_display(item["mtime"])
@@ -928,8 +961,25 @@ PUBLIC_CONFIG_KEYS = [
     "cpa_pool_refresh_skew_sec",
     "cpa_pool_max_items_per_scan",
     "cpa_pool_probe_proxy",
+    "cpa_pool_scheduler_tick_sec",
+    "cpa_pool_adaptive_batch_size",
+    "cpa_pool_healthy_check_interval_sec",
+    "cpa_pool_observe_check_interval_sec",
+    "cpa_pool_candidate_check_interval_sec",
+    "cpa_pool_independent_failure_interval_sec",
+    "cpa_pool_recovery_success_threshold",
+    "cpa_pool_chat_sample_percent",
+    "cpa_pool_models_probe_rate_per_sec",
+    "cpa_pool_chat_probe_rate_per_sec",
+    "cpa_pool_breaker_window_sec",
+    "cpa_pool_breaker_min_samples",
+    "cpa_pool_breaker_min_errors",
+    "cpa_pool_breaker_error_ratio",
+    "cpa_pool_breaker_open_sec",
     "cpa_pool_history_limit",
     "cpa_pool_scan_history_limit",
+    "cpa_pool_observation_retention_days",
+    "cpa_pool_governance_action_retention_days",
     "cpa_pool_apply_policy",
     "cpa_pool_auto_refill",
     "cpa_pool_refill_target_active",
@@ -945,6 +995,24 @@ PUBLIC_CONFIG_KEYS = [
     "cpa_pool_soft_fail_threshold",
     "cpa_pool_quota_threshold",
     "cpa_pool_quota_cooldown_sec",
+    "cpa_pool_governance_max_downgrades_per_scan",
+    "cpa_pool_governance_max_downgrade_percent",
+    "cpa_pool_main_low_water_percent",
+    "cpa_pool_reserve_target_percent",
+    "cpa_pool_refill_max_inventory",
+    "cpa_pool_refill_low_water_hold_sec",
+    "cpa_pool_refill_low_water_rounds",
+    "cpa_pool_refill_min_baseline_percent",
+    "cpa_pool_refill_cooling_grace_sec",
+    "cpa_pool_refill_expected_yield_percent",
+    "cpa_pool_refill_daily_limit",
+    "cpa_pool_cli_management_enabled",
+    "cpa_pool_cli_management_url",
+    "cpa_pool_cli_management_key",
+    "cpa_pool_cli_management_timeout_sec",
+    "cpa_pool_cli_management_cache_sec",
+    "cpa_pool_file_fallback_enabled",
+    "cpa_pool_file_fallback_grace_sec",
     "cpa_pool_hard_bad_action",
     "cpa_pool_refresh_failed_action",
     "cpa_pool_invalid_action",
@@ -976,8 +1044,25 @@ PUBLIC_CONFIG_DEFAULTS = {
     "cpa_pool_refresh_skew_sec": 2700,
     "cpa_pool_max_items_per_scan": 0,
     "cpa_pool_probe_proxy": "direct",
+    "cpa_pool_scheduler_tick_sec": 300,
+    "cpa_pool_adaptive_batch_size": 200,
+    "cpa_pool_healthy_check_interval_sec": 43200,
+    "cpa_pool_observe_check_interval_sec": 720,
+    "cpa_pool_candidate_check_interval_sec": 1200,
+    "cpa_pool_independent_failure_interval_sec": 600,
+    "cpa_pool_recovery_success_threshold": 2,
+    "cpa_pool_chat_sample_percent": 5,
+    "cpa_pool_models_probe_rate_per_sec": 8,
+    "cpa_pool_chat_probe_rate_per_sec": 2,
+    "cpa_pool_breaker_window_sec": 300,
+    "cpa_pool_breaker_min_samples": 30,
+    "cpa_pool_breaker_min_errors": 10,
+    "cpa_pool_breaker_error_ratio": 0.3,
+    "cpa_pool_breaker_open_sec": 180,
     "cpa_pool_history_limit": 8,
     "cpa_pool_scan_history_limit": 100,
+    "cpa_pool_observation_retention_days": 7,
+    "cpa_pool_governance_action_retention_days": 90,
     "cpa_pool_apply_policy": False,
     "cpa_pool_auto_refill": False,
     "cpa_pool_refill_target_active": 0,
@@ -992,7 +1077,25 @@ PUBLIC_CONFIG_DEFAULTS = {
     "cpa_pool_no_grok45_threshold": 2,
     "cpa_pool_soft_fail_threshold": 3,
     "cpa_pool_quota_threshold": 1,
-    "cpa_pool_quota_cooldown_sec": 21600,
+    "cpa_pool_quota_cooldown_sec": 86400,
+    "cpa_pool_governance_max_downgrades_per_scan": 50,
+    "cpa_pool_governance_max_downgrade_percent": 1,
+    "cpa_pool_main_low_water_percent": 90,
+    "cpa_pool_reserve_target_percent": 10,
+    "cpa_pool_refill_max_inventory": 4000,
+    "cpa_pool_refill_low_water_hold_sec": 1800,
+    "cpa_pool_refill_low_water_rounds": 2,
+    "cpa_pool_refill_min_baseline_percent": 100,
+    "cpa_pool_refill_cooling_grace_sec": 86400,
+    "cpa_pool_refill_expected_yield_percent": 80,
+    "cpa_pool_refill_daily_limit": 200,
+    "cpa_pool_cli_management_enabled": False,
+    "cpa_pool_cli_management_url": "http://127.0.0.1:8317/v0/management",
+    "cpa_pool_cli_management_key": "",
+    "cpa_pool_cli_management_timeout_sec": 5,
+    "cpa_pool_cli_management_cache_sec": 10,
+    "cpa_pool_file_fallback_enabled": True,
+    "cpa_pool_file_fallback_grace_sec": 60,
     "cpa_pool_hard_bad_action": "quarantine",
     "cpa_pool_refresh_failed_action": "quarantine",
     "cpa_pool_invalid_action": "quarantine",
@@ -1008,6 +1111,7 @@ SECRET_CONFIG_KEYS = {
     "duckmail_api_key",
     "yyds_api_key",
     "yyds_jwt",
+    "cpa_pool_cli_management_key",
     "mailnest_api_key",
     "grok2api_remote_app_key",
     "yescaptcha_key",

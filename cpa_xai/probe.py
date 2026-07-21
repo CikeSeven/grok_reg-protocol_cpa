@@ -18,6 +18,29 @@ DEFAULT_CHAT_PROBE_INITIAL_DELAY_SEC: float = 3.0
 # After a failed attempt, wait these seconds before each retry.
 DEFAULT_CHAT_PROBE_RETRY_DELAYS_SEC: tuple[float, ...] = (5.0, 15.0, 30.0)
 
+_SAFE_RESPONSE_HEADERS = {
+    "retry-after",
+    "x-request-id",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+}
+
+
+def _safe_response_headers(response: Any) -> dict[str, str]:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return {}
+    result: dict[str, str] = {}
+    try:
+        for key, value in headers.items():
+            normalized = str(key).strip().lower()
+            if normalized in _SAFE_RESPONSE_HEADERS:
+                result[normalized] = str(value).strip()[:300]
+    except Exception:
+        return {}
+    return result
+
 
 def _sleep_interruptible(
     seconds: float,
@@ -78,6 +101,7 @@ def probe_models(
             return {
                 "ok": True,
                 "status": getattr(resp, "status", 200),
+                "headers": _safe_response_headers(resp),
                 "model_ids": ids,
                 "has_grok_45": any(i == "grok-4.5" for i in ids),
             }
@@ -85,6 +109,7 @@ def probe_models(
         return {
             "ok": False,
             "status": e.code,
+            "headers": _safe_response_headers(e),
             "error": e.read().decode("utf-8", errors="replace")[:500],
             "model_ids": [],
             "has_grok_45": False,
@@ -139,6 +164,7 @@ def probe_mini_response(
             return {
                 "ok": True,
                 "status": getattr(resp, "status", 200),
+                "headers": _safe_response_headers(resp),
                 "model": body.get("model"),
                 "text": "\n".join(texts),
                 "usage": body.get("usage"),
@@ -147,6 +173,7 @@ def probe_mini_response(
         return {
             "ok": False,
             "status": e.code,
+            "headers": _safe_response_headers(e),
             "error": e.read().decode("utf-8", errors="replace")[:800],
         }
     except Exception as e:  # noqa: BLE001

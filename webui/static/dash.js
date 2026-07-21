@@ -47,21 +47,25 @@
 
   /* ---------- 渲染:概览 ---------- */
   function renderStats(ov, pool) {
+    var p = pool.pool || {};
     var defs = [
-      ["CPA 总数", num(pool.cpa_total != null ? pool.cpa_total : ov.cpa_total), "c-accent"],
-      ["可用", num(pool.ok), "c-ok"],
-      ["额度/冷却", num(pool.quota), "c-cool"],
-      ["异常", num(pool.bad), "c-bad"],
-      ["隔离区", num(pool.quarantine_total), "c-warn"],
-      ["账号总数", num(ov.accounts_total), "c-new"],
+      ["文件库存", num(p.file_inventory != null ? p.file_inventory : pool.cpa_total), "c-accent"],
+      ["CLI 已加载", num(p.cli_loaded), "c-new"],
+      ["主力可路由", num(p.main_routeable != null ? p.main_routeable : pool.ok), "c-ok"],
+      ["备用账号", num(p.reserve), "c-accent"],
+      ["候选/观察", num((p.candidate || 0) + (p.observe || 0)), "c-warn"],
+      ["冷却账号", num(p.cooling != null ? p.cooling : pool.quota), "c-cool"],
+      ["隔离账号", num(p.quarantine != null ? p.quarantine : pool.quarantine_total), "c-bad"],
+      ["上游状态", p.upstream_state === "open" ? "熔断" : "正常", p.upstream_state === "open" ? "c-bad" : "c-ok"],
     ];
     $("stats").innerHTML = defs.map(function (d) {
       return '<div class="stat ' + d[2] + '"><i class="chip"></i><div class="n">' + d[1] + '</div><div class="k">' + d[0] + "</div></div>";
     }).join("");
   }
   function renderHero(ov, pool) {
-    var okv = Number(pool.ok) || 0;
-    var cpaTotal = Number(pool.cpa_total != null ? pool.cpa_total : ov.cpa_total) || 0;
+    var p = pool.pool || {};
+    var okv = Number(p.main_routeable != null ? p.main_routeable : pool.ok) || 0;
+    var cpaTotal = Number(p.file_inventory != null ? p.file_inventory : (pool.cpa_total != null ? pool.cpa_total : ov.cpa_total)) || 0;
     $("gOk").textContent = okv;
     $("gTotal").textContent = cpaTotal;
     $("hAccounts").textContent = num(ov.accounts_total);
@@ -80,7 +84,8 @@
     $("scanState").textContent = pool.running ? "运行中" : "空闲";
     var pg = pool.progress || {};
     $("scanProgress").textContent = (pg.total ? (pg.done || 0) + " / " + pg.total : "—");
-    $("lastSummary").textContent = "可用 " + num(pool.ok) + " · 额度 " + num(pool.quota) + " · 异常 " + num(pool.bad);
+    var p = pool.pool || {};
+    $("lastSummary").textContent = "主力 " + num(p.main_routeable) + " · 备用 " + num(p.reserve) + " · 冷却 " + num(p.cooling);
     var ar = cfg ? !!cfg.cpa_pool_auto_refill : null;
     $("autoRefill").textContent = ar == null ? "—" : (ar ? "开" : "关");
     $("cpaProxy").textContent = ov.cpa_proxy || "direct";
@@ -112,7 +117,7 @@
   }
 
   /* ---------- CPA 明细 ---------- */
-  var CPA_TABS = [["all", "全部"], ["ok", "可用"], ["quota", "额度"], ["bad", "异常"], ["unchecked", "未巡检"]];
+  var CPA_TABS = [["all", "全部"], ["main", "主力"], ["reserve", "备用"], ["observe", "观察"], ["quota", "冷却"], ["bad", "异常"], ["unchecked", "未巡检"]];
   function renderCpaTabs() {
     $("cpaTabs").innerHTML = CPA_TABS.map(function (t) {
       return '<button type="button" class="tab' + (t[0] === CPA_STATUS ? " active" : "") + '" data-st="' + t[0] + '">' + t[1] + "</button>";
@@ -130,10 +135,11 @@
       $("cpaPrev").disabled = d.page <= 1;
       $("cpaNext").disabled = d.page >= d.total_pages;
       $("cpaBody").innerHTML = (d.items || []).map(function (it) {
-        var scan = String(it.scan_status || "unchecked");
+        var scan = String(it.health_status || it.scan_status || "unchecked");
+        var tier = String(it.pool_tier || "candidate");
         var cls = scan.replace(/[^a-z0-9_]/gi, "") || "unchecked";
         return "<tr><td class=email title='" + esc(it.email) + "'>" + esc(it.email) + "</td>" +
-          "<td><span class='pill " + cls + "' title='" + esc(it.scan_reason || "") + "'>" + esc(scan) + "</span></td>" +
+          "<td><span class='pill " + cls + "' title='" + esc(it.scan_reason || "") + "'>" + esc(tier + " / " + scan) + "</span></td>" +
           "<td>" + esc(it.mint_method || "—") + "</td>" +
           "<td>" + esc(it.location || "—") + "</td>" +
           "<td>" + esc(it.expired || "—") + "</td>" +

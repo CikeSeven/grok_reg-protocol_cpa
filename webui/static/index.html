@@ -427,14 +427,20 @@
           </div>
           <div class="panel-body">
             <div class="pool-kpis">
-              <div class="pool-kpi"><span>文件总数</span><b id="cpa-pool-total">0</b></div>
-              <div class="pool-kpi ok"><span>可用</span><b id="cpa-pool-ok">0</b></div>
-              <div class="pool-kpi warn"><span>额度/冷却</span><b id="cpa-pool-quota">0</b></div>
-              <div class="pool-kpi err"><span>异常</span><b id="cpa-pool-bad">0</b></div>
-              <div class="pool-kpi accent"><span>本轮续期</span><b id="cpa-pool-refreshed">0</b></div>
-              <div class="pool-kpi"><span>已巡检</span><b id="cpa-pool-results">0</b></div>
-              <div class="pool-kpi warn"><span>隔离区</span><b id="cpa-pool-quarantine">0</b></div>
+              <div class="pool-kpi"><span>文件库存</span><b id="cpa-pool-total">0</b></div>
+              <div class="pool-kpi"><span>CLI 已加载</span><b id="cpa-pool-cli-loaded">-</b></div>
+              <div class="pool-kpi ok"><span>主力可路由</span><b id="cpa-pool-ok">0</b></div>
+              <div class="pool-kpi accent"><span>备用账号</span><b id="cpa-pool-reserve">0</b></div>
+              <div class="pool-kpi"><span>候选 / 观察</span><b id="cpa-pool-observe">0</b></div>
+              <div class="pool-kpi warn"><span>冷却账号</span><b id="cpa-pool-quota">0</b></div>
+              <div class="pool-kpi err"><span>隔离账号</span><b id="cpa-pool-quarantine">0</b></div>
+              <div class="pool-kpi" id="cpa-pool-upstream-kpi"><span>上游状态</span><b id="cpa-pool-upstream">未知</b></div>
               <div class="pool-kpi accent"><span>自动补号</span><b id="cpa-pool-refill">OFF</b></div>
+            </div>
+            <div class="pool-breaker" id="cpa-pool-breaker" hidden>
+              <svg><use href="#i-zap"/></svg>
+              <strong>上游熔断</strong>
+              <span id="cpa-pool-breaker-detail">-</span>
             </div>
             <div class="pool-actions">
               <label class="top-inline">并发
@@ -459,8 +465,11 @@
                 <input id="cpa-pool-auto-refill" type="checkbox">
                 自动补CPA
               </label>
-              <label class="top-inline">补号目标
-                <input id="cpa-pool-refill-target" type="number" min="0" max="100000" value="0" title="0=保持本轮巡检前活跃 CPA 文件数">
+              <label class="top-inline">主力目标
+                <input id="cpa-pool-refill-target" type="number" min="0" max="100000" value="0">
+              </label>
+              <label class="top-inline">库存上限
+                <input id="cpa-pool-refill-inventory" type="number" min="1" max="100000" value="4000">
               </label>
               <label class="top-inline">单轮补号
                 <input id="cpa-pool-refill-max" type="number" min="1" max="10000" value="30">
@@ -483,7 +492,7 @@
               </button>
             </div>
             <div class="progress pool-progress"><div class="progress-bar" id="cpa-pool-progress"></div></div>
-            <p class="hint" id="cpa-pool-meta">建议：常规巡检只开 <code>models</code>，需要确认真实对话能力时再临时打开 <code>probe chat</code>。</p>
+            <p class="hint" id="cpa-pool-meta">-</p>
             <div class="log-panel pool-log" id="cpa-pool-log"><div class="log-line dim">// 等待巡检</div></div>
           </div>
         </div>
@@ -532,6 +541,32 @@
           </div>
         </div>
 
+        <div class="panel governance-history-panel">
+          <div class="panel-head">
+            <h2><svg><use href="#i-shield"/></svg>治理记录</h2>
+            <button class="icon-btn" id="refresh-cpa-actions" type="button" aria-label="刷新治理记录" title="刷新治理记录"><svg><use href="#i-refresh"/></svg></button>
+          </div>
+          <div class="table-wrap governance-history-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>账号</th>
+                  <th>动作</th>
+                  <th>层级变化</th>
+                  <th>原因</th>
+                  <th>结果</th>
+                </tr>
+              </thead>
+              <tbody id="cpa-action-rows"></tbody>
+            </table>
+            <div class="empty compact" id="cpa-actions-empty" hidden>
+              <svg><use href="#i-history"/></svg>
+              <strong>暂无治理记录</strong>
+            </div>
+          </div>
+        </div>
+
         <div class="panel">
           <div class="toolbar">
             <div class="search">
@@ -540,16 +575,18 @@
             </div>
             <select id="cpa-status" class="select">
               <option value="all">全部状态</option>
-              <option value="ok">可用</option>
+              <option value="main">主力池</option>
+              <option value="reserve">备用池</option>
+              <option value="candidate">候选池</option>
+              <option value="observe">观察池</option>
               <option value="quota">额度/冷却</option>
+              <option value="upstream_busy">上游繁忙</option>
               <option value="bad">异常汇总</option>
-              <option value="refresh_failed">续期失败</option>
-              <option value="hard_bad">硬坏</option>
-              <option value="invalid">无效</option>
+              <option value="invalid_auth">认证失效</option>
+              <option value="malformed">文件损坏</option>
               <option value="no_grok45">无 4.5</option>
-              <option value="soft_fail">软失败</option>
-              <option value="probe_failed">探测失败</option>
-              <option value="disabled">已禁用</option>
+              <option value="transient_error">临时异常</option>
+              <option value="manual_disabled">手动禁用</option>
               <option value="unchecked">未巡检</option>
             </select>
             <div class="seg">
@@ -574,7 +611,8 @@
                   <th>邮箱</th>
                   <th>Mint 方法</th>
                   <th>位置</th>
-                  <th>巡检</th>
+                  <th>层级 / 健康</th>
+                  <th>调度</th>
                   <th>到期</th>
                   <th>更新时间</th>
                   <th class="c-actions">操作</th>
@@ -611,9 +649,8 @@
             </div>
             <select id="cpa-quarantine-bucket" class="select">
               <option value="all">全部分组</option>
-              <option value="hard_bad">硬坏</option>
-              <option value="refresh_failed">续期失败</option>
-              <option value="invalid">无效文件</option>
+              <option value="invalid_auth">认证失效</option>
+              <option value="malformed">文件损坏</option>
               <option value="no_grok45">无 4.5</option>
               <option value="manual">手动隔离</option>
               <option value="deleted">已删除</option>
