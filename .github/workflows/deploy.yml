@@ -61,7 +61,7 @@ jobs:
           set -euo pipefail
           uv sync --frozen
           uv run python -m unittest discover -s tests -p 'test_*.py'
-          uv run python -m py_compile account_convert.py webui/app.py webui/store.py webui/cpa_pool.py webui/jobs.py webui/timeutil.py
+          uv run python -m py_compile account_convert.py webui/app.py webui/store.py webui/cpa_pool.py webui/jobs.py webui/timeutil.py webui/mail_tools.py
           node --check webui/static/app.js
           python -m json.tool config.example.json >/dev/null
 

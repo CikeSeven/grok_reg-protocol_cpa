@@ -595,10 +595,11 @@ def _mail_rows_with_status(cfg: dict[str, Any]) -> tuple[list[dict[str, Any]], s
         items.append(
             {
                 "email": row["email"],
-                "password": row["password"],
                 "client_id": row["client_id"],
                 "token_preview": _mask_secret(row["token"], 8),
                 "has_token": bool(row["token"]),
+                "has_password": bool(row["password"]),
+                "auth_type": "oauth" if row["client_id"] and row["token"] else "password",
                 "consumed": consumed,
                 "max_aliases": max_aliases,
                 "remaining": max(0, max_aliases - consumed),
@@ -715,6 +716,59 @@ def import_mail_credentials(text: str, *, mode: str = "append", config: dict[str
         path.write_text(body, encoding="utf-8")
     _clear_store_caches("mail", "overview")
     return {"added": added, "updated": updated, "total": len(by_email), "path": str(path)}
+
+
+def read_mail_credentials(
+    emails: list[str] | set[str] | None = None,
+    config: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Read mailbox secrets for internal workers. Never expose this result directly."""
+
+    cfg = config if config is not None else load_config_raw()
+    path = mail_file(cfg)
+    wanted = {str(email).strip().lower() for email in (emails or []) if str(email).strip()}
+    if not path.is_file():
+        return []
+    with _lock:
+        rows = parse_mail_credentials(path.read_text(encoding="utf-8-sig", errors="replace"))
+    return [dict(row) for row in rows if not wanted or row["email"].lower() in wanted]
+
+
+def update_mail_refresh_token(
+    email: str,
+    refresh_token: str,
+    expected_refresh_token: str | None = None,
+    config: dict[str, Any] | None = None,
+) -> bool:
+    """Atomically keep a rotated Microsoft refresh token in the source file."""
+
+    email_key = str(email or "").strip().lower()
+    token = str(refresh_token or "").strip()
+    if not email_key or not token:
+        return False
+    cfg = config if config is not None else load_config_raw()
+    path = mail_file(cfg)
+    if not path.is_file():
+        return False
+    changed = False
+    with _lock:
+        rows = parse_mail_credentials(path.read_text(encoding="utf-8-sig", errors="replace"))
+        for row in rows:
+            if row["email"].lower() != email_key or row["token"] == token:
+                continue
+            if expected_refresh_token is not None and row["token"] != expected_refresh_token:
+                continue
+            row["token"] = token
+            row["raw"] = f"{row['email']}----{row['password']}----{row['client_id']}----{token}"
+            changed = True
+        if changed:
+            body = "\n".join(row["raw"] for row in rows)
+            tmp = path.with_name(f".{path.name}.mail-token.tmp")
+            tmp.write_text(body + ("\n" if body else ""), encoding="utf-8")
+            tmp.replace(path)
+    if changed:
+        _clear_store_caches("mail", "overview")
+    return changed
 
 
 def delete_mail_credentials(emails: list[str], config: dict[str, Any] | None = None) -> int:
@@ -1072,5 +1126,7 @@ __all__ = [
     "merge_config_update",
     "overview",
     "public_config",
+    "read_mail_credentials",
     "save_config",
+    "update_mail_refresh_token",
 ]

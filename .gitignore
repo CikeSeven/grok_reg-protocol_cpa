@@ -21,6 +21,9 @@ mail_credentials.txt
 cpa_pool_state.json
 .cpa_pool_state.json.tmp
 cpa_pool_scan.journal.jsonl
+mail_tool_state.json
+.mail_tool_state.json.tmp
+.mail_credentials.txt.mail-token.tmp
 cpa_quarantine/
 cpa_auths/
 cookies/

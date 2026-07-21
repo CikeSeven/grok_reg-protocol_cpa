@@ -26,6 +26,7 @@ from . import store
 from . import timeutil
 from .cpa_pool import monitor as cpa_pool_monitor
 from .jobs import runner
+from .mail_tools import mail_tool_manager
 
 STATIC_DIR = Path(__file__).with_name("static")
 
@@ -299,6 +300,7 @@ def create_app() -> FastAPI:
         mode = str(body.get("mode") or "append")
         if not text.strip():
             raise ValueError("请提供凭证内容")
+        mail_tool_manager.ensure_idle()
         return store.import_mail_credentials(text, mode=mode)
 
     @app.delete("/api/mail-credentials")
@@ -307,6 +309,7 @@ def create_app() -> FastAPI:
         emails = body.get("emails") or []
         if not emails:
             raise ValueError("请选择邮箱凭证")
+        mail_tool_manager.ensure_idle()
         return {"deleted": store.delete_mail_credentials(list(emails))}
 
     @app.get("/api/config")
@@ -549,6 +552,73 @@ def create_app() -> FastAPI:
             if isinstance(exc, (ac.ConvertError, ValueError)):
                 return JSONResponse({"error": str(exc)}, status_code=400)
             raise
+
+    @app.get("/api/tools/mail/accounts")
+    def tools_mail_accounts(
+        query: str = "",
+        protocol: str = "all",
+        health: str = "all",
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=1, le=200),
+    ) -> dict[str, Any]:
+        return mail_tool_manager.list_accounts(
+            query=query,
+            protocol=protocol,
+            health=health,
+            page=page,
+            page_size=page_size,
+        )
+
+    @app.post("/api/tools/mail/inspect")
+    async def tools_mail_inspect(request: Request) -> dict[str, Any]:
+        body = await request.json()
+        text = str(body.get("text") or "")
+        if not text.strip():
+            raise ValueError("请提供邮箱内容")
+        return mail_tool_manager.inspect_import(text)
+
+    @app.post("/api/tools/mail/import")
+    async def tools_mail_import(request: Request) -> dict[str, Any]:
+        body = await request.json()
+        text = str(body.get("text") or "")
+        mode = str(body.get("mode") or "append").strip().lower()
+        if mode not in {"append", "replace"}:
+            raise ValueError("导入模式无效")
+        if not text.strip():
+            raise ValueError("请提供邮箱内容")
+        return mail_tool_manager.import_accounts(text, mode=mode)
+
+    @app.delete("/api/tools/mail/accounts")
+    async def tools_mail_delete(request: Request) -> dict[str, int]:
+        body = await request.json()
+        emails = [str(email).strip() for email in (body.get("emails") or []) if str(email).strip()]
+        if not emails:
+            raise ValueError("请选择邮箱")
+        mail_tool_manager.ensure_idle()
+        deleted = store.delete_mail_credentials(emails)
+        if deleted:
+            mail_tool_manager.forget(emails)
+        return {"deleted": deleted}
+
+    @app.get("/api/tools/mail/check/status")
+    def tools_mail_check_status() -> dict[str, Any]:
+        return mail_tool_manager.status()
+
+    @app.post("/api/tools/mail/check")
+    async def tools_mail_check(request: Request) -> JSONResponse:
+        body = await request.json()
+        result = mail_tool_manager.start_check(
+            emails=list(body.get("emails") or []),
+            action=str(body.get("action") or "detect"),
+            workers=int(body.get("workers") or 4),
+            proxy_mode=str(body.get("proxy_mode") or "direct"),
+            recent_seconds=int(body.get("recent_seconds") or 900),
+        )
+        return JSONResponse(result, status_code=202 if result.get("started") else 200)
+
+    @app.post("/api/tools/mail/check/stop")
+    def tools_mail_check_stop() -> dict[str, Any]:
+        return mail_tool_manager.stop()
 
     @app.get("/")
     def index():

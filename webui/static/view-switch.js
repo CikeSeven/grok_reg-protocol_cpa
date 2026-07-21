@@ -61,7 +61,10 @@
       "#apc-vs-float .view-opt.active{background:linear-gradient(135deg,#7c5cf0,#0ea5e9);color:#fff;" +
       "box-shadow:0 4px 12px rgba(124,92,240,.4)}" +
       "#apc-vs-float::before{content:'视图';align-self:center;padding:0 6px 0 8px;font-size:10.5px;" +
-      "font-weight:700;letter-spacing:.12em;color:#92a0bd}";
+      "font-weight:700;letter-spacing:.12em;color:#92a0bd}" +
+      "@media(max-width:900px){#apc-vs-float{position:static;order:9;margin:0 0 0 auto;padding:3px;gap:2px;" +
+      "box-shadow:none;backdrop-filter:none;background:#fff}#apc-vs-float::before{display:none}" +
+      "#apc-vs-float .view-opt{padding:6px 9px;font-size:11px;letter-spacing:0}}";
     document.head.appendChild(s);
   }
   function ensureFloating() {
@@ -72,7 +75,7 @@
     box.id = "apc-vs-float";
     box.setAttribute("role", "group");
     box.setAttribute("aria-label", "视图切换(原始 / Soft UI / 漫画)");
-    document.body.appendChild(box);
+    (document.querySelector(".side") || document.body).appendChild(box);
   }
   function init() { ensureFloating(); render(); }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

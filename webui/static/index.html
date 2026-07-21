@@ -821,7 +821,16 @@
           </div>
         </header>
 
-        <div class="tools-grid">
+        <nav class="tool-tabs" role="tablist" aria-label="工具菜单">
+          <button class="active" data-tool-page="convert" type="button" role="tab" aria-selected="true">
+            <svg><use href="#i-swap"/></svg><span>格式转换</span>
+          </button>
+          <button data-tool-page="mail" type="button" role="tab" aria-selected="false">
+            <svg><use href="#i-mail"/></svg><span>邮箱管理</span>
+          </button>
+        </nav>
+
+        <div class="tools-grid" data-tool-panel="convert">
           <div class="panel">
             <div class="panel-head">
               <h2><svg><use href="#i-swap"/></svg>账号格式转换</h2>
@@ -917,6 +926,129 @@
             </div>
           </div>
         </div>
+
+        <div class="mail-tool" data-tool-panel="mail" hidden>
+          <div class="tool-metrics">
+            <div><span>邮箱总数</span><strong id="mail-tool-m-total">0</strong></div>
+            <div><span>IMAP</span><strong id="mail-tool-m-imap">0</strong></div>
+            <div><span>Graph</span><strong id="mail-tool-m-graph">0</strong></div>
+            <div><span>可用</span><strong id="mail-tool-m-ok">0</strong></div>
+            <div><span>异常</span><strong id="mail-tool-m-failed">0</strong></div>
+            <div><span>未检测</span><strong id="mail-tool-m-unchecked">0</strong></div>
+          </div>
+
+          <div class="panel mail-tool-panel">
+            <div class="panel-head">
+              <h2><svg><use href="#i-mail"/></svg>微软邮箱</h2>
+              <div class="panel-actions">
+                <button class="btn ghost sm" id="mail-tool-refresh" type="button" title="刷新邮箱列表">
+                  <svg><use href="#i-refresh"/></svg>刷新
+                </button>
+                <button class="btn ghost sm" id="mail-tool-check-all" type="button">
+                  <svg><use href="#i-zap"/></svg>检测全部
+                </button>
+                <button class="btn danger sm" id="mail-tool-stop" type="button" hidden>
+                  <svg><use href="#i-stop"/></svg>停止
+                </button>
+                <button class="btn primary sm" id="mail-tool-import-open" type="button">
+                  <svg><use href="#i-upload"/></svg>导入邮箱
+                </button>
+              </div>
+            </div>
+
+            <div class="mail-tool-task" id="mail-tool-task" hidden>
+              <div class="mail-tool-task-line">
+                <span class="live-dot"></span>
+                <strong id="mail-tool-task-title">检测中</strong>
+                <span id="mail-tool-task-count" class="mono">0 / 0</span>
+                <span id="mail-tool-task-current" class="hint mono"></span>
+              </div>
+              <div class="progress-track"><i id="mail-tool-task-progress"></i></div>
+            </div>
+
+            <div class="panel-body mail-tool-body">
+              <div class="toolbar">
+                <div class="search">
+                  <svg><use href="#i-search"/></svg>
+                  <input id="mail-tool-search" type="search" placeholder="搜索邮箱 / 检测原因…" autocomplete="off">
+                </div>
+                <select id="mail-tool-protocol" class="select">
+                  <option value="all">全部协议</option>
+                  <option value="imap">IMAP</option>
+                  <option value="graph">Graph</option>
+                  <option value="unchecked">未识别</option>
+                </select>
+                <select id="mail-tool-health" class="select">
+                  <option value="all">全部状态</option>
+                  <option value="ok">可用</option>
+                  <option value="invalid">凭证失效</option>
+                  <option value="error">连接失败</option>
+                  <option value="unchecked">未检测</option>
+                </select>
+                <select id="mail-tool-proxy" class="select" title="检测连接方式">
+                  <option value="direct">直连检测</option>
+                  <option value="config">注册代理（OAuth / Graph）</option>
+                </select>
+                <select id="mail-tool-workers" class="select" title="检测并发">
+                  <option value="1">并发 1</option>
+                  <option value="2">并发 2</option>
+                  <option value="4" selected>并发 4</option>
+                  <option value="8">并发 8</option>
+                </select>
+                <select id="mail-tool-recent" class="select" title="验证码邮件时间窗口">
+                  <option value="300">最近 5 分钟</option>
+                  <option value="900" selected>最近 15 分钟</option>
+                  <option value="3600">最近 1 小时</option>
+                  <option value="21600">最近 6 小时</option>
+                </select>
+                <div class="seg push-right">
+                  <button type="button" data-mail-tool-select="page">本页全部</button>
+                  <button type="button" data-mail-tool-select="clear">清空选择</button>
+                </div>
+              </div>
+
+              <div class="batchbar" id="mail-tool-batch">
+                <span>已选 <b id="mail-tool-selected-count">0</b> 项</span>
+                <span class="vsep"></span>
+                <button class="link" id="mail-tool-check-selected" type="button">检测协议</button>
+                <button class="link" id="mail-tool-code-selected" type="button">读取验证码</button>
+                <button class="link danger" id="mail-tool-delete" type="button">删除</button>
+              </div>
+
+              <div class="table-wrap">
+                <table class="mail-tool-table">
+                  <thead>
+                    <tr>
+                      <th class="c-check"><input id="mail-tool-select-all" type="checkbox" aria-label="全选"></th>
+                      <th>邮箱</th>
+                      <th>认证</th>
+                      <th>接码协议</th>
+                      <th>检测状态</th>
+                      <th>最近验证码</th>
+                      <th>检测时间</th>
+                      <th class="c-actions">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="mail-tool-rows"></tbody>
+                </table>
+                <div class="empty" id="mail-tool-empty" hidden>
+                  <svg><use href="#i-mail"/></svg>
+                  <strong>暂无微软邮箱</strong>
+                </div>
+              </div>
+              <footer class="table-foot">
+                <span id="mail-tool-count">共 0 条</span>
+                <span class="hint mono" id="mail-tool-path"></span>
+                <div class="pager">
+                  <button class="icon-btn" id="mail-tool-prev" type="button" aria-label="上一页"><svg><use href="#i-chev-l"/></svg></button>
+                  <span id="mail-tool-page-label">1 / 1</span>
+                  <button class="icon-btn" id="mail-tool-next" type="button" aria-label="下一页"><svg><use href="#i-chev-r"/></svg></button>
+                  <input class="page-jump" id="mail-tool-page-jump" type="number" min="1" placeholder="页码" title="输入页码回车跳转">
+                </div>
+              </footer>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- ── Settings view ── -->
@@ -1008,6 +1140,48 @@
       <footer class="dialog-foot">
         <button class="btn ghost" value="cancel" type="submit">取消</button>
         <button class="btn primary" id="mail-import-submit" value="default" type="submit">导入</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Mail tool import dialog -->
+  <dialog id="mail-tool-import-dialog" class="dialog-wide">
+    <form method="dialog" class="dialog" id="mail-tool-import-form">
+      <header class="dialog-head">
+        <div>
+          <p class="eyebrow">MICROSOFT MAIL</p>
+          <h2>导入微软邮箱</h2>
+        </div>
+        <button class="icon-btn" value="cancel" type="submit" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+      </header>
+      <div class="dialog-body">
+        <div class="import-source-row">
+          <button class="btn ghost sm" id="mail-tool-import-file-open" type="button">
+            <svg><use href="#i-file"/></svg>选择文件
+          </button>
+          <span class="hint mono" id="mail-tool-import-file-name">TXT / CSV / JSON</span>
+          <input id="mail-tool-import-file" type="file" accept=".txt,.csv,.json,.jsonl" hidden>
+        </div>
+        <textarea id="mail-tool-import-text" class="code mail-tool-import-text" spellcheck="false" placeholder="user@outlook.com----password----client_id----refresh_token"></textarea>
+        <div class="mail-import-inspect" id="mail-tool-import-inspect" hidden>
+          <div class="mail-import-summary">
+            <span><b id="mail-tool-import-valid">0</b> 有效</span>
+            <span><b id="mail-tool-import-invalid">0</b> 无效</span>
+            <span><b id="mail-tool-import-duplicates">0</b> 重复</span>
+          </div>
+          <div class="convert-provider-list mail-import-formats" id="mail-tool-import-formats"></div>
+          <div class="convert-warnings" id="mail-tool-import-issues" hidden></div>
+        </div>
+        <label class="switch-row">
+          <span>替换现有邮箱文件</span>
+          <span class="switch"><input id="mail-tool-import-replace" type="checkbox"><i></i></span>
+        </label>
+      </div>
+      <footer class="dialog-foot">
+        <button class="btn ghost" value="cancel" type="submit">取消</button>
+        <button class="btn primary" id="mail-tool-import-submit" value="default" type="submit" disabled>
+          <svg><use href="#i-upload"/></svg>导入
+        </button>
       </footer>
     </form>
   </dialog>

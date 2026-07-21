@@ -44,6 +44,21 @@ const state = {
   selectedProxies: new Set(),
   proxyChecking: false,
   proxyCheckTimer: null,
+  toolPage: "convert",
+  mailTool: [],
+  mailToolPage: 1,
+  mailToolPages: 1,
+  mailToolTotal: 0,
+  mailToolMetrics: {},
+  mailToolPath: "",
+  mailToolQuery: "",
+  mailToolProtocol: "all",
+  mailToolHealth: "all",
+  selectedMailTool: new Set(),
+  mailToolTask: null,
+  mailToolPollTimer: null,
+  mailToolImportSeq: 0,
+  mailToolImportPreview: null,
   jobs: [],
   activeJobId: null,
   activeJobStarted: "",
@@ -70,6 +85,7 @@ const statusText = {
   completed: "已完成",
   failed: "失败",
   stopped: "已停止",
+  interrupted: "已中断",
   idle: "空闲",
   quota: "额度/冷却",
   soft_fail: "软失败",
@@ -309,10 +325,32 @@ function fmtElapsed(startedIso) {
 
 /* ── views ── */
 
-function setView(view) {
+function setToolPage(page, updateHash = true) {
+  const next = ["convert", "mail"].includes(page) ? page : "convert";
+  state.toolPage = next;
+  $$('[data-tool-page]').forEach((button) => {
+    const active = button.dataset.toolPage === next;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  $$('[data-tool-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.toolPanel !== next;
+  });
+  if (updateHash && state.view === "tools" && location.hash !== `#tools/${next}`) {
+    history.replaceState(null, "", `#tools/${next}`);
+  }
+  if (state.view === "tools" && next === "mail") {
+    loadMailTool().catch((e) => toast(e.message, true));
+    pollMailToolStatus().catch(() => {});
+  }
+}
+
+function setView(view, toolPage = null) {
   state.view = view;
   closePageSettings();
-  if (location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
+  if (view === "tools" && ["convert", "mail"].includes(toolPage)) state.toolPage = toolPage;
+  const nextHash = view === "tools" ? `#tools/${state.toolPage}` : `#${view}`;
+  if (location.hash !== nextHash) history.replaceState(null, "", nextHash);
   $$(".nav-item[data-view]").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.viewPanel !== view;
@@ -322,6 +360,7 @@ function setView(view) {
   if (view === "mail") loadMail().catch((e) => toast(e.message, true));
   if (view === "proxies") loadProxies().catch((e) => toast(e.message, true));
   if (view === "settings") loadConfig().catch((e) => toast(e.message, true));
+  if (view === "tools") setToolPage(state.toolPage, false);
 }
 
 function openJobs(open = true) {
@@ -377,6 +416,12 @@ function renderOverview() {
 
   renderPipeline(o);
   renderActiveJob(o.active_job);
+}
+
+async function loadOverview() {
+  state.overview = await api("/api/overview");
+  renderOverview();
+  return state.overview;
 }
 
 function renderPipeline(o) {
@@ -1506,6 +1551,237 @@ async function runConvert() {
   }
 }
 
+const mailToolProtocolText = {
+  imap: "IMAP",
+  graph: "Graph",
+  unknown: "未识别",
+  unchecked: "未检测",
+};
+
+const mailToolHealthText = {
+  ok: "可用",
+  invalid: "凭证失效",
+  error: "连接失败",
+  unchecked: "未检测",
+};
+
+function mailToolHealthPill(health) {
+  if (health === "ok") return "ok";
+  if (health === "error") return "warn";
+  if (health === "invalid") return "err";
+  return "idle";
+}
+
+function mailToolProtocolPill(protocol) {
+  if (protocol === "imap") return "ok";
+  if (protocol === "graph") return "running";
+  return "idle";
+}
+
+function renderMailTool(data = {}) {
+  const tbody = $("#mail-tool-rows");
+  tbody.innerHTML = "";
+  $("#mail-tool-empty").hidden = state.mailTool.length > 0;
+  for (const row of state.mailTool) {
+    const selected = state.selectedMailTool.has(row.email);
+    const tr = document.createElement("tr");
+    if (selected) tr.classList.add("selected");
+    const authText = row.auth_type === "oauth" ? "OAuth" : "密码";
+    const codeCell = row.code
+      ? `<span class="mail-code-value">${esc(row.code)}<button class="icon-btn" type="button" data-copy-mail-code="${esc(row.code)}" title="复制验证码"><svg><use href="#i-file"/></svg></button></span><small class="table-sub" title="${esc(row.subject || "")}">${esc(row.message_at || row.subject || "-")}</small>`
+      : `<span class="mono">-</span><small class="table-sub">${esc(row.subject || "")}</small>`;
+    tr.innerHTML = `
+      <td class="c-check"><input type="checkbox" data-mail-tool-email="${esc(row.email)}" ${selected ? "checked" : ""}></td>
+      <td><div class="cell-main">
+        <span class="avatar">${esc(initials(row.email))}</span>
+        <span><span class="cell-email" title="${esc(row.email)}">${esc(row.email)}</span><small class="table-sub mono">${esc(row.client_id || "-")}</small></span>
+      </div></td>
+      <td><span class="pill idle">${esc(authText)}</span><small class="table-sub">${row.has_password ? "含密码" : "无密码"}</small></td>
+      <td><span class="pill ${mailToolProtocolPill(row.protocol)}">${esc(mailToolProtocolText[row.protocol] || row.protocol || "未检测")}</span><small class="table-sub mono">${esc(row.provider || "-")}</small></td>
+      <td><span class="pill ${mailToolHealthPill(row.health)}">${esc(mailToolHealthText[row.health] || row.health || "未检测")}</span><small class="table-sub" title="${esc(row.reason || "")}">${esc(row.reason || "-")}</small></td>
+      <td>${codeCell}</td>
+      <td><span class="mono">${esc(row.checked_at || "-")}</span><small class="table-sub">${row.latency_ms == null ? "" : `${esc(row.latency_ms)} ms`}</small></td>
+      <td class="c-actions"><div class="mail-tool-row-actions">
+        <button class="icon-btn" type="button" data-mail-tool-check="${esc(row.email)}" title="检测接码协议"><svg><use href="#i-zap"/></svg></button>
+        <button class="icon-btn" type="button" data-mail-tool-code="${esc(row.email)}" title="读取最近验证码"><svg><use href="#i-key"/></svg></button>
+      </div></td>
+    `;
+    tbody.append(tr);
+  }
+  const metrics = data.metrics || state.mailToolMetrics || {};
+  for (const key of ["total", "imap", "graph", "ok", "failed", "unchecked"]) {
+    const node = $(`#mail-tool-m-${key}`);
+    if (node) node.textContent = String(metrics[key] || 0);
+  }
+  $("#mail-tool-count").textContent = `共 ${state.mailToolTotal} 条`;
+  $("#mail-tool-page-label").textContent = `${state.mailToolPage} / ${state.mailToolPages}`;
+  const path = data.path || state.mailToolPath;
+  $("#mail-tool-path").textContent = path ? `路径: ${path}` : "";
+  $("#mail-tool-selected-count").textContent = String(state.selectedMailTool.size);
+  $("#mail-tool-batch").classList.toggle("active", state.selectedMailTool.size > 0);
+  $("#mail-tool-select-all").checked =
+    state.mailTool.length > 0 && state.mailTool.every((row) => state.selectedMailTool.has(row.email));
+}
+
+async function loadMailTool() {
+  const params = new URLSearchParams({
+    query: state.mailToolQuery,
+    protocol: state.mailToolProtocol,
+    health: state.mailToolHealth,
+    page: String(state.mailToolPage),
+    page_size: "50",
+  });
+  const data = await api(`/api/tools/mail/accounts?${params}`);
+  state.mailTool = data.items || [];
+  state.mailToolTotal = data.total || 0;
+  state.mailToolPage = data.page || 1;
+  state.mailToolPages = data.total_pages || 1;
+  state.mailToolMetrics = data.metrics || {};
+  state.mailToolPath = data.path || "";
+  renderMailTool(data);
+  return data;
+}
+
+function renderMailToolTask(payload = {}) {
+  const task = payload.task || {};
+  const running = Boolean(payload.running);
+  state.mailToolTask = task;
+  const panel = $("#mail-tool-task");
+  panel.hidden = !task.id;
+  $("#mail-tool-stop").hidden = !running;
+  $("#mail-tool-check-all").disabled = running;
+  $("#mail-tool-check-selected").disabled = running;
+  $("#mail-tool-code-selected").disabled = running;
+  $("#mail-tool-import-open").disabled = running;
+  $("#mail-tool-delete").disabled = running;
+  if (!task.id) return;
+  const done = Number(task.done || 0);
+  const total = Number(task.total || 0);
+  const percent = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+  const action = task.action === "code" ? "读取验证码" : "检测协议";
+  const statusLabel = running ? "进行中" : (statusText[task.status] || task.status || "-");
+  $("#mail-tool-task-title").textContent = `${action} · ${statusLabel}`;
+  $("#mail-tool-task-count").textContent = `${done} / ${total}`;
+  $("#mail-tool-task-current").textContent = task.current || task.error || "";
+  $("#mail-tool-task-progress").style.width = `${percent}%`;
+}
+
+async function pollMailToolStatus() {
+  const wasRunning = Boolean(state.mailToolTask?.status === "running");
+  const payload = await api("/api/tools/mail/check/status");
+  renderMailToolTask(payload);
+  if (payload.running) {
+    if (!state.mailToolPollTimer) {
+      state.mailToolPollTimer = setInterval(() => {
+        pollMailToolStatus().catch(() => {});
+      }, 1200);
+    }
+  } else {
+    if (state.mailToolPollTimer) {
+      clearInterval(state.mailToolPollTimer);
+      state.mailToolPollTimer = null;
+    }
+    if (wasRunning) {
+      await loadMailTool();
+      const task = payload.task || {};
+      toast(`邮箱任务完成：可用 ${task.ok || 0}，失败 ${task.failed || 0}`);
+    }
+  }
+  return payload;
+}
+
+async function startMailToolCheck(emails = [], action = "detect") {
+  const result = await api("/api/tools/mail/check", {
+    method: "POST",
+    body: JSON.stringify({
+      emails,
+      action,
+      workers: Number($("#mail-tool-workers").value || 4),
+      proxy_mode: $("#mail-tool-proxy").value,
+      recent_seconds: Number($("#mail-tool-recent").value || 900),
+    }),
+  });
+  renderMailToolTask({ running: true, task: result.task || {} });
+  await pollMailToolStatus();
+}
+
+function renderMailToolImportInspect(payload = null, error = "") {
+  const panel = $("#mail-tool-import-inspect");
+  const submit = $("#mail-tool-import-submit");
+  if (!payload && !error) {
+    panel.hidden = true;
+    submit.disabled = true;
+    return;
+  }
+  panel.hidden = false;
+  $("#mail-tool-import-valid").textContent = String(payload?.valid || 0);
+  $("#mail-tool-import-invalid").textContent = String(payload?.invalid || (error ? 1 : 0));
+  $("#mail-tool-import-duplicates").textContent = String(payload?.duplicates || 0);
+  $("#mail-tool-import-formats").innerHTML = Object.entries(payload?.formats || {})
+    .map(([format, count]) => `<span><b>${esc(format)}</b>${esc(count)}</span>`)
+    .join("");
+  const issues = error ? [{ error }] : (payload?.issues || []);
+  const issueBox = $("#mail-tool-import-issues");
+  issueBox.hidden = issues.length === 0;
+  issueBox.innerHTML = issues.slice(0, 8)
+    .map((issue) => `<span>${issue.line ? `第 ${esc(issue.line)} 行 · ` : ""}${esc(issue.error || issue)}</span>`)
+    .join("");
+  submit.disabled = !(payload?.valid > 0);
+}
+
+async function inspectMailToolImport() {
+  const text = $("#mail-tool-import-text").value;
+  const seq = ++state.mailToolImportSeq;
+  state.mailToolImportPreview = null;
+  if (!text.trim()) {
+    renderMailToolImportInspect();
+    return;
+  }
+  try {
+    const payload = await api("/api/tools/mail/inspect", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+    if (seq !== state.mailToolImportSeq) return;
+    state.mailToolImportPreview = payload;
+    renderMailToolImportInspect(payload);
+  } catch (err) {
+    if (seq !== state.mailToolImportSeq) return;
+    renderMailToolImportInspect(null, err.message);
+  }
+}
+
+async function submitMailToolImport() {
+  if (!state.mailToolImportPreview?.valid) {
+    toast("没有可导入的有效邮箱", true);
+    return;
+  }
+  const button = $("#mail-tool-import-submit");
+  button.disabled = true;
+  try {
+    const result = await api("/api/tools/mail/import", {
+      method: "POST",
+      body: JSON.stringify({
+        text: $("#mail-tool-import-text").value,
+        mode: $("#mail-tool-import-replace").checked ? "replace" : "append",
+      }),
+    });
+    $("#mail-tool-import-dialog").close();
+    $("#mail-tool-import-text").value = "";
+    $("#mail-tool-import-file").value = "";
+    $("#mail-tool-import-file-name").textContent = "TXT / CSV / JSON";
+    state.mailToolImportPreview = null;
+    state.selectedMailTool.clear();
+    state.mailToolPage = 1;
+    await loadMailTool();
+    loadMail().catch(() => {});
+    loadOverview().catch(() => {});
+    toast(`已导入 ${result.imported || 0} 条，跳过 ${result.invalid || 0} 条`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /* ── jobs ── */
 
 function renderJobs() {
@@ -1721,6 +1997,9 @@ function bindEvents() {
   $$(".nav-item[data-view]").forEach((btn) => {
     btn.addEventListener("click", () => setView(btn.dataset.view));
   });
+  $$('[data-tool-page]').forEach((btn) => {
+    btn.addEventListener("click", () => setToolPage(btn.dataset.toolPage));
+  });
   $("#open-jobs").addEventListener("click", () => openJobs(true));
   $("#close-jobs").addEventListener("click", () => openJobs(false));
   $("#drawer-backdrop").addEventListener("click", () => {
@@ -1731,6 +2010,12 @@ function bindEvents() {
     if (e.key !== "Escape") return;
     if ($("#page-settings-drawer").classList.contains("open")) closePageSettings();
     else if ($("#job-drawer").classList.contains("open")) openJobs(false);
+  });
+  window.addEventListener("hashchange", () => {
+    const [view, toolPage] = location.hash.replace(/^#/, "").split("/");
+    if (view && document.querySelector(`[data-view-panel="${view}"]`)) {
+      setView(view, view === "tools" ? toolPage : null);
+    }
   });
 
   /* 页面设置抽屉 */
@@ -2205,6 +2490,141 @@ function bindEvents() {
     }
   });
 
+  /* mail tool */
+  $("#mail-tool-refresh").addEventListener("click", () => {
+    loadMailTool().catch((e) => toast(e.message, true));
+    pollMailToolStatus().catch(() => {});
+  });
+  $("#mail-tool-search").addEventListener("input", debounce((e) => {
+    state.mailToolQuery = e.target.value.trim();
+    state.mailToolPage = 1;
+    loadMailTool().catch((err) => toast(err.message, true));
+  }));
+  $("#mail-tool-protocol").addEventListener("change", (e) => {
+    state.mailToolProtocol = e.target.value;
+    state.mailToolPage = 1;
+    loadMailTool().catch((err) => toast(err.message, true));
+  });
+  $("#mail-tool-health").addEventListener("change", (e) => {
+    state.mailToolHealth = e.target.value;
+    state.mailToolPage = 1;
+    loadMailTool().catch((err) => toast(err.message, true));
+  });
+  $("#mail-tool-prev").addEventListener("click", () => {
+    if (state.mailToolPage > 1) {
+      state.mailToolPage -= 1;
+      loadMailTool().catch(() => {});
+    }
+  });
+  $("#mail-tool-next").addEventListener("click", () => {
+    if (state.mailToolPage < state.mailToolPages) {
+      state.mailToolPage += 1;
+      loadMailTool().catch(() => {});
+    }
+  });
+  bindPageJump("#mail-tool-page-jump", (page) => {
+    state.mailToolPage = Math.min(Math.max(1, page), state.mailToolPages);
+    loadMailTool().catch(() => {});
+  });
+  $$('[data-mail-tool-select]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.mailToolSelect === "page") {
+        state.mailTool.forEach((row) => state.selectedMailTool.add(row.email));
+      } else {
+        state.selectedMailTool.clear();
+      }
+      renderMailTool();
+    });
+  });
+  $("#mail-tool-select-all").addEventListener("change", (e) => {
+    state.mailTool.forEach((row) => {
+      if (e.target.checked) state.selectedMailTool.add(row.email);
+      else state.selectedMailTool.delete(row.email);
+    });
+    renderMailTool();
+  });
+  $("#mail-tool-rows").addEventListener("change", (e) => {
+    const input = e.target.closest("input[data-mail-tool-email]");
+    if (!input) return;
+    if (input.checked) state.selectedMailTool.add(input.dataset.mailToolEmail);
+    else state.selectedMailTool.delete(input.dataset.mailToolEmail);
+    renderMailTool();
+  });
+  $("#mail-tool-rows").addEventListener("click", (e) => {
+    const copy = e.target.closest("[data-copy-mail-code]");
+    if (copy) {
+      navigator.clipboard.writeText(copy.dataset.copyMailCode)
+        .then(() => toast("验证码已复制"))
+        .catch((err) => toast(err.message, true));
+      return;
+    }
+    const check = e.target.closest("[data-mail-tool-check]");
+    if (check) {
+      startMailToolCheck([check.dataset.mailToolCheck], "detect").catch((err) => toast(err.message, true));
+      return;
+    }
+    const code = e.target.closest("[data-mail-tool-code]");
+    if (code) {
+      startMailToolCheck([code.dataset.mailToolCode], "code").catch((err) => toast(err.message, true));
+    }
+  });
+  $("#mail-tool-check-all").addEventListener("click", () => {
+    startMailToolCheck([], "detect").catch((e) => toast(e.message, true));
+  });
+  $("#mail-tool-check-selected").addEventListener("click", () => {
+    if (!state.selectedMailTool.size) return;
+    startMailToolCheck([...state.selectedMailTool], "detect").catch((e) => toast(e.message, true));
+  });
+  $("#mail-tool-code-selected").addEventListener("click", () => {
+    if (!state.selectedMailTool.size) return;
+    startMailToolCheck([...state.selectedMailTool], "code").catch((e) => toast(e.message, true));
+  });
+  $("#mail-tool-stop").addEventListener("click", async () => {
+    try {
+      const payload = await api("/api/tools/mail/check/stop", { method: "POST", body: "{}" });
+      renderMailToolTask(payload);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+  $("#mail-tool-delete").addEventListener("click", async () => {
+    if (!state.selectedMailTool.size) return;
+    if (!confirm(`确认删除 ${state.selectedMailTool.size} 条微软邮箱？`)) return;
+    try {
+      const result = await api("/api/tools/mail/accounts", {
+        method: "DELETE",
+        body: JSON.stringify({ emails: [...state.selectedMailTool] }),
+      });
+      state.selectedMailTool.clear();
+      await loadMailTool();
+      loadMail().catch(() => {});
+      loadOverview().catch(() => {});
+      toast(`已删除 ${result.deleted || 0} 条邮箱`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+  $("#mail-tool-import-open").addEventListener("click", () => {
+    renderMailToolImportInspect(state.mailToolImportPreview);
+    $("#mail-tool-import-dialog").showModal();
+  });
+  $("#mail-tool-import-file-open").addEventListener("click", () => $("#mail-tool-import-file").click());
+  $("#mail-tool-import-file").addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    $("#mail-tool-import-file-name").textContent = `${file.name} · ${(file.size / 1024).toFixed(1)} KB`;
+    $("#mail-tool-import-text").value = await file.text();
+    inspectMailToolImport().catch((err) => toast(err.message, true));
+  });
+  $("#mail-tool-import-text").addEventListener("input", debounce(() => {
+    inspectMailToolImport().catch((err) => toast(err.message, true));
+  }, 350));
+  $("#mail-tool-import-form").addEventListener("submit", (e) => {
+    if (e.submitter?.value !== "default") return;
+    e.preventDefault();
+    submitMailToolImport().catch((err) => toast(err.message, true));
+  });
+
   /* settings */
   $("#reload-config").addEventListener("click", () => loadConfig().catch((e) => toast(e.message, true)));
   $("#save-config").addEventListener("click", async () => {
@@ -2251,8 +2671,10 @@ function bindEvents() {
 
 async function boot() {
   bindEvents();
-  const hashView = location.hash.replace("#", "");
-  if (hashView && document.querySelector(`[data-view-panel="${hashView}"]`)) setView(hashView);
+  const [hashView, hashToolPage] = location.hash.replace(/^#/, "").split("/");
+  if (hashView && document.querySelector(`[data-view-panel="${hashView}"]`)) {
+    setView(hashView, hashView === "tools" ? hashToolPage : null);
+  }
   try {
     state.overview = await api("/api/overview");
     renderOverview();
