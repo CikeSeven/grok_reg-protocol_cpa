@@ -83,6 +83,22 @@ class WebuiCpaPoolRecoveryTests(unittest.TestCase):
         self.assertEqual(second._next_scan_at, deadline)
         self.assertEqual(second._scheduled_interval_sec, 1800)
 
+    def test_monitor_keeps_the_state_path_captured_at_creation(self):
+        first = self._monitor()
+        other_path = self.state_path.with_name("other-cpa-pool-state.json")
+
+        with mock.patch.object(cpa_pool, "STATE_PATH", other_path):
+            second = self._monitor()
+            first._scan_id = "first-state"
+            second._scan_id = "second-state"
+            self.assertTrue(first._save_state())
+            self.assertTrue(second._save_state())
+
+        first_payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        second_payload = json.loads(other_path.read_text(encoding="utf-8"))
+        self.assertEqual(first_payload["scan_id"], "first-state")
+        self.assertEqual(second_payload["scan_id"], "second-state")
+
     def test_legacy_state_derives_deadline_from_last_finish(self):
         finished_at = "2026-07-21T02:00:00+08:00"
         self.state_path.write_text(

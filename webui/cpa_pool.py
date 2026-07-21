@@ -453,6 +453,7 @@ def _beijingize_record(row: dict[str, Any]) -> dict[str, Any]:
 
 class CpaPoolMonitor:
     def __init__(self) -> None:
+        self._state_path = Path(STATE_PATH)
         self._lock = threading.RLock()
         self._state_write_lock = threading.Lock()
         self._results: dict[str, dict[str, Any]] = {}
@@ -513,10 +514,10 @@ class CpaPoolMonitor:
         return settings
 
     def _load_state(self) -> None:
-        if not STATE_PATH.is_file():
+        if not self._state_path.is_file():
             return
         try:
-            data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
             results = data.get("results") or {}
@@ -575,9 +576,8 @@ class CpaPoolMonitor:
         except Exception:
             return
 
-    @staticmethod
-    def _scan_journal_path() -> Path:
-        return STATE_PATH.with_name(SCAN_JOURNAL_FILENAME)
+    def _scan_journal_path(self) -> Path:
+        return self._state_path.with_name(SCAN_JOURNAL_FILENAME)
 
     def _restore_scan_journal(self) -> int:
         active = self._active_scan
@@ -725,13 +725,13 @@ class CpaPoolMonitor:
                         "results": dict(self._results),
                     }
                 encoded = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-                STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-                tmp = STATE_PATH.with_name(
-                    f".{STATE_PATH.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+                self._state_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self._state_path.with_name(
+                    f".{self._state_path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
                 )
                 try:
                     tmp.write_text(encoded, encoding="utf-8")
-                    os.replace(tmp, STATE_PATH)
+                    os.replace(tmp, self._state_path)
                 finally:
                     tmp.unlink(missing_ok=True)
             return True
