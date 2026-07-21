@@ -421,7 +421,7 @@ function setBadge(sel, value) {
   const el = $(sel);
   const n = Number(value || 0);
   el.hidden = n <= 0;
-  el.textContent = n > 999 ? "999+" : String(n);
+  el.textContent = n > 9999 ? "9999+" : String(n);
 }
 
 function renderOverview() {
