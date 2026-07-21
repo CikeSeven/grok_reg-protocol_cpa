@@ -471,8 +471,8 @@
               <label class="top-inline">库存上限
                 <input id="cpa-pool-refill-inventory" type="number" min="1" max="100000" value="4000">
               </label>
-              <label class="top-inline">单轮补号
-                <input id="cpa-pool-refill-max" type="number" min="1" max="10000" value="30">
+              <label class="top-inline">单批补号
+                <input id="cpa-pool-refill-max" type="number" min="1" max="10000" value="200">
               </label>
               <label class="top-inline">补号并发
                 <input id="cpa-pool-refill-workers" type="number" min="-1" max="20" value="-1" title="-1=使用 cpa_mint_workers/自动">
@@ -565,6 +565,23 @@
               <strong>暂无治理记录</strong>
             </div>
           </div>
+          <footer class="table-foot governance-history-foot">
+            <span id="cpa-action-count">共 0 条</span>
+            <div class="pager">
+              <label class="page-size-control">每页
+                <select id="cpa-action-page-size" class="select" aria-label="治理记录每页条数">
+                  <option value="10" selected>10</option>
+                  <option value="20">20</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+              <button class="icon-btn" id="cpa-action-prev" type="button" aria-label="治理记录上一页"><svg><use href="#i-chev-l"/></svg></button>
+              <span id="cpa-action-page-label">1 / 1</span>
+              <button class="icon-btn" id="cpa-action-next" type="button" aria-label="治理记录下一页"><svg><use href="#i-chev-r"/></svg></button>
+              <input class="page-jump" id="cpa-action-page-jump" type="number" min="1" placeholder="页码" title="输入页码回车跳转">
+            </div>
+          </footer>
         </div>
 
         <div class="panel">

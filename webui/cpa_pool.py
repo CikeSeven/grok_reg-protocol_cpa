@@ -108,9 +108,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # backfill job to mint missing CPA files from accounts_cli.txt.
     "auto_refill": False,
     "refill_target_active": 0,  # 0 = keep pre-scan active count
-    "refill_max_per_scan": 30,
+    "refill_max_per_scan": 200,
     "refill_workers": -1,
     "refill_probe_chat": False,
+    "refill_controller_interval_sec": 30,
+    "refill_emergency_threshold_percent": 90,
     "refill_max_inventory": 4000,
     "refill_low_water_hold_sec": 30 * 60,
     "refill_low_water_rounds": 2,
@@ -389,13 +391,15 @@ def settings_from_config(config: dict[str, Any] | None = None) -> dict[str, Any]
             "refill_max_per_scan": _coerce_int(cfg.get("cpa_pool_refill_max_per_scan"), int(s["refill_max_per_scan"]), min_v=1, max_v=10000),
             "refill_workers": _coerce_int(cfg.get("cpa_pool_refill_workers"), int(s["refill_workers"]), min_v=-1, max_v=20),
             "refill_probe_chat": _coerce_bool(cfg.get("cpa_pool_refill_probe_chat"), bool(s["refill_probe_chat"])),
+            "refill_controller_interval_sec": _coerce_int(cfg.get("cpa_pool_refill_controller_interval_sec"), int(s["refill_controller_interval_sec"]), min_v=10, max_v=3600),
+            "refill_emergency_threshold_percent": _coerce_int(cfg.get("cpa_pool_refill_emergency_threshold_percent"), int(s["refill_emergency_threshold_percent"]), min_v=0, max_v=100),
             "refill_max_inventory": _coerce_int(cfg.get("cpa_pool_refill_max_inventory"), int(s["refill_max_inventory"]), min_v=1, max_v=100000),
             "refill_low_water_hold_sec": _coerce_int(cfg.get("cpa_pool_refill_low_water_hold_sec"), int(s["refill_low_water_hold_sec"]), min_v=0, max_v=7 * 86400),
             "refill_low_water_rounds": _coerce_int(cfg.get("cpa_pool_refill_low_water_rounds"), int(s["refill_low_water_rounds"]), min_v=1, max_v=10),
             "refill_min_baseline_percent": _coerce_int(cfg.get("cpa_pool_refill_min_baseline_percent"), int(s["refill_min_baseline_percent"]), min_v=1, max_v=100),
             "refill_cooling_grace_sec": _coerce_int(cfg.get("cpa_pool_refill_cooling_grace_sec"), int(s["refill_cooling_grace_sec"]), min_v=0, max_v=30 * 86400),
             "refill_expected_yield_percent": _coerce_int(cfg.get("cpa_pool_refill_expected_yield_percent"), int(s["refill_expected_yield_percent"]), min_v=10, max_v=100),
-            "refill_daily_limit": _coerce_int(cfg.get("cpa_pool_refill_daily_limit"), int(s["refill_daily_limit"]), min_v=1, max_v=10000),
+            "refill_daily_limit": _coerce_int(cfg.get("cpa_pool_refill_daily_limit"), int(s["refill_daily_limit"]), min_v=0, max_v=100000),
             "cli_management_enabled": _coerce_bool(cfg.get("cpa_pool_cli_management_enabled"), bool(s["cli_management_enabled"])),
             "cli_management_url": str(cfg.get("cpa_pool_cli_management_url") or s["cli_management_url"]).strip(),
             "cli_management_key": str(cfg.get("cpa_pool_cli_management_key") or os.environ.get("CPA_POOL_CLI_MANAGEMENT_KEY") or "").strip(),
@@ -568,6 +572,9 @@ class CpaPoolMonitor:
         self._last_maintenance_at = 0.0
         self._governance_downgrades = 0
         self._governance_limit = 0
+        self._refill_lock = threading.Lock()
+        self._last_refill_controller_at = 0.0
+        self._refill_status: dict[str, Any] = {}
         self._load_state()
 
     def _repo(self) -> PoolStateDB:
@@ -714,9 +721,11 @@ class CpaPoolMonitor:
         settings["refresh_skew_sec"] = _coerce_int(settings.get("refresh_skew_sec"), 2700, min_v=0, max_v=86400)
         settings["max_items_per_scan"] = _coerce_int(settings.get("max_items_per_scan"), 0, min_v=0, max_v=100000)
         settings["refill_target_active"] = _coerce_int(settings.get("refill_target_active"), 0, min_v=0, max_v=100000)
-        settings["refill_max_per_scan"] = _coerce_int(settings.get("refill_max_per_scan"), 30, min_v=1, max_v=10000)
+        settings["refill_max_per_scan"] = _coerce_int(settings.get("refill_max_per_scan"), 200, min_v=1, max_v=10000)
         settings["refill_workers"] = _coerce_int(settings.get("refill_workers"), -1, min_v=-1, max_v=20)
         settings["refill_probe_chat"] = _coerce_bool(settings.get("refill_probe_chat"), False)
+        settings["refill_controller_interval_sec"] = _coerce_int(settings.get("refill_controller_interval_sec"), 30, min_v=10, max_v=3600)
+        settings["refill_emergency_threshold_percent"] = _coerce_int(settings.get("refill_emergency_threshold_percent"), 90, min_v=0, max_v=100)
         settings["scan_history_limit"] = _coerce_int(settings.get("scan_history_limit"), 100, min_v=0, max_v=1000)
         settings["observation_retention_days"] = _coerce_int(settings.get("observation_retention_days"), 7, min_v=1, max_v=365)
         settings["governance_action_retention_days"] = _coerce_int(settings.get("governance_action_retention_days"), 90, min_v=1, max_v=3650)
@@ -1127,6 +1136,25 @@ class CpaPoolMonitor:
             self._save_state()
         if due:
             self.start_scan({"trigger": "auto", "adaptive": True})
+        else:
+            self._run_refill_controller(cfg_settings, now=current)
+
+    def _run_refill_controller(self, settings: dict[str, Any], *, now: float) -> None:
+        interval = int(settings.get("refill_controller_interval_sec") or 30)
+        with self._lock:
+            if self._running or now - self._last_refill_controller_at < interval:
+                return
+            self._last_refill_controller_at = now
+        if not bool(settings.get("auto_refill")):
+            return
+        try:
+            self._maybe_start_refill(
+                settings=settings,
+                initial_total=len(store.list_cpa_index()),
+                trigger="controller",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"自动补号控制器异常：{_mask_error(exc)}")
 
     def _prune_durable_history(self, settings: dict[str, Any], *, now: float | None = None) -> None:
         current = time.time() if now is None else float(now)
@@ -1632,13 +1660,24 @@ class CpaPoolMonitor:
                 applied += 1
         return applied
 
-    def list_actions(self, *, limit: int = 100) -> dict[str, Any]:
+    def list_actions(self, *, page: int = 1, page_size: int = 10) -> dict[str, Any]:
+        page = max(1, int(page or 1))
+        page_size = max(1, min(int(page_size or 10), 1000))
+        total = self._repo().count_actions()
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, total_pages)
         items = []
-        for raw in self._repo().list_actions(limit=limit):
+        for raw in self._repo().list_actions(limit=page_size, offset=(page - 1) * page_size):
             item = dict(raw)
             item["action_at"] = timeutil.timestamp_display(float(item.get("action_ts") or 0)) if item.get("action_ts") else ""
             items.append(item)
-        return {"items": items, "total": len(items)}
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
 
     def status(self) -> dict[str, Any]:
         self.ensure_scheduler()
@@ -1661,6 +1700,7 @@ class CpaPoolMonitor:
             resume_count = self._resume_count
             resumed_at = timeutil.iso_to_beijing_display(self._resumed_at) if self._resumed_at else ""
             recovery_pending = self._recovery_pending
+            refill_status = dict(self._refill_status)
         pool = self._pool_metrics()
         cpa_total = int(pool.get("file_inventory") or summary.get("total") or 0)
         q_total = int(pool.get("quarantine") or 0)
@@ -1689,6 +1729,7 @@ class CpaPoolMonitor:
             "settings": settings,
             "progress": progress,
             "summary": summary,
+            "refill_status": refill_status,
             "pool": pool,
             "logs": logs,
             "cpa_total": cpa_total,
@@ -2573,6 +2614,20 @@ class CpaPoolMonitor:
         return fallback
 
     def _maybe_start_refill(self, *, settings: dict[str, Any], initial_total: int, trigger: str) -> dict[str, Any]:
+        with self._refill_lock:
+            result = self._maybe_start_refill_locked(
+                settings=settings,
+                initial_total=initial_total,
+                trigger=trigger,
+            )
+            result = dict(result)
+            result.setdefault("trigger", trigger)
+            result["checked_at"] = _utc_now()
+            with self._lock:
+                self._refill_status = dict(result)
+        return result
+
+    def _maybe_start_refill_locked(self, *, settings: dict[str, Any], initial_total: int, trigger: str) -> dict[str, Any]:
         if not bool(settings.get("auto_refill")):
             return {"enabled": False, "started": False}
         if not bool(settings.get("apply_policy")):
@@ -2637,6 +2692,9 @@ class CpaPoolMonitor:
             if eligible_baseline
             else (100.0 if not managed_states else 0.0)
         )
+        emergency_percent = int(settings.get("refill_emergency_threshold_percent") or 0)
+        emergency_floor = math.ceil(target * emergency_percent / 100) if target > 0 and emergency_percent > 0 else 0
+        emergency = bool(emergency_floor and ready_main < emergency_floor)
         common = {
             "enabled": True,
             "started": False,
@@ -2654,6 +2712,9 @@ class CpaPoolMonitor:
             "baseline_percent": baseline_percent,
             "gap": gap,
             "need": math.ceil(gap / expected_yield) if gap > 0 else 0,
+            "emergency": emergency,
+            "emergency_threshold_percent": emergency_percent,
+            "emergency_floor": emergency_floor,
         }
         if gap <= 0:
             self._repo().set_meta("refill_low_since", 0)
@@ -2673,44 +2734,45 @@ class CpaPoolMonitor:
             return common
         if active_job and active_job.status in {"queued", "running"}:
             msg = f"auto_refill waiting for active job {active_job.kind} {active_job.id}"
-            common.update({"active_job": active_job.id, "error": msg})
+            common.update({"active_job": active_job.id, "waiting_for_job": True, "message": msg})
             return common
-        low_since = float(self._repo().get_meta("refill_low_since", 0) or 0)
-        if not low_since:
-            low_since = now
-            self._repo().set_meta("refill_low_since", low_since)
-        low_rounds = self._repo().get_meta("refill_low_rounds", {})
-        if not isinstance(low_rounds, dict):
-            low_rounds = {}
-        round_key = self._scan_id or f"{trigger}:{int(now)}"
-        if str(low_rounds.get("last_scan_id") or "") != round_key:
-            low_rounds = {
-                "count": int(low_rounds.get("count") or 0) + 1,
-                "last_scan_id": round_key,
-                "updated_at": now,
-            }
-            self._repo().set_meta("refill_low_rounds", low_rounds)
-        required_rounds = int(settings.get("refill_low_water_rounds") or 2)
-        if int(low_rounds.get("count") or 0) < required_rounds:
-            common.update(
-                {
-                    "waiting_for_rounds": True,
-                    "low_rounds": int(low_rounds.get("count") or 0),
-                    "required_low_rounds": required_rounds,
+        if not emergency:
+            low_since = float(self._repo().get_meta("refill_low_since", 0) or 0)
+            if not low_since:
+                low_since = now
+                self._repo().set_meta("refill_low_since", low_since)
+            low_rounds = self._repo().get_meta("refill_low_rounds", {})
+            if not isinstance(low_rounds, dict):
+                low_rounds = {}
+            round_key = self._scan_id or f"{trigger}:{int(now)}"
+            if str(low_rounds.get("last_scan_id") or "") != round_key:
+                low_rounds = {
+                    "count": int(low_rounds.get("count") or 0) + 1,
+                    "last_scan_id": round_key,
+                    "updated_at": now,
                 }
-            )
-            return common
-        hold_sec = int(settings.get("refill_low_water_hold_sec") or 0)
-        if now - low_since < hold_sec:
-            common.update(
-                {
-                    "waiting_for_stability": True,
-                    "low_rounds": int(low_rounds.get("count") or 0),
-                    "required_low_rounds": required_rounds,
-                    "eligible_in_sec": max(0, int(hold_sec - (now - low_since))),
-                }
-            )
-            return common
+                self._repo().set_meta("refill_low_rounds", low_rounds)
+            required_rounds = int(settings.get("refill_low_water_rounds") or 2)
+            if int(low_rounds.get("count") or 0) < required_rounds:
+                common.update(
+                    {
+                        "waiting_for_rounds": True,
+                        "low_rounds": int(low_rounds.get("count") or 0),
+                        "required_low_rounds": required_rounds,
+                    }
+                )
+                return common
+            hold_sec = int(settings.get("refill_low_water_hold_sec") or 0)
+            if now - low_since < hold_sec:
+                common.update(
+                    {
+                        "waiting_for_stability": True,
+                        "low_rounds": int(low_rounds.get("count") or 0),
+                        "required_low_rounds": required_rounds,
+                        "eligible_in_sec": max(0, int(hold_sec - (now - low_since))),
+                    }
+                )
+                return common
         need = math.ceil(gap / expected_yield)
         max_inventory = int(settings.get("refill_max_inventory") or 4000)
         inventory_headroom = max(0, max_inventory - current_total)
@@ -2718,11 +2780,31 @@ class CpaPoolMonitor:
         daily = self._repo().get_meta("refill_daily", {})
         if not isinstance(daily, dict) or daily.get("date") != day_key:
             daily = {"date": day_key, "count": 0}
-        daily_remaining = max(0, int(settings.get("refill_daily_limit") or 200) - int(daily.get("count") or 0))
-        limit = min(need, int(settings.get("refill_max_per_scan") or 30), inventory_headroom, daily_remaining)
+        daily_soft_limit = int(settings.get("refill_daily_limit") if settings.get("refill_daily_limit") is not None else 200)
+        daily_used = int(daily.get("count") or 0)
+        daily_remaining = max(0, daily_soft_limit - daily_used) if daily_soft_limit > 0 else None
+        bypass_daily_soft_limit = emergency or daily_soft_limit <= 0
+        daily_allowance = need if bypass_daily_soft_limit else int(daily_remaining or 0)
+        batch_size = int(settings.get("refill_max_per_scan") or 200)
+        common.update(
+            {
+                "batch_size": batch_size,
+                "daily_soft_limit": daily_soft_limit,
+                "daily_used": daily_used,
+                "daily_remaining": daily_remaining,
+                "daily_soft_limit_bypassed": bypass_daily_soft_limit,
+            }
+        )
+        limit = min(need, batch_size, inventory_headroom, daily_allowance)
         if limit <= 0:
-            reason = "max inventory reached" if inventory_headroom <= 0 else "daily refill limit reached"
-            return {**common, "need": need, "error": reason}
+            if inventory_headroom <= 0:
+                return {**common, "need": need, "error": "max inventory reached"}
+            return {
+                **common,
+                "need": need,
+                "waiting_for_daily_budget": True,
+                "message": "daily refill soft limit reached",
+            }
         try:
             from .jobs import runner
 
@@ -2775,7 +2857,8 @@ class CpaPoolMonitor:
                     }
                 )
             self._log(
-                f"自动补号已启动：strategy={strategy} gap={gap} need={need} limit={limit} "
+                f"自动补号已启动：strategy={strategy} gap={gap} need={need} batch={limit} "
+                f"emergency={emergency} daily={daily_used}/{daily_soft_limit or 'unlimited'} "
                 f"candidates={len(candidates)} exclude={len(exclude_emails)} job={job.get('id')} trigger={trigger}"
             )
             daily["count"] = int(daily.get("count") or 0) + limit

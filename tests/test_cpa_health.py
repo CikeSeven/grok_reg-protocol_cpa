@@ -160,6 +160,28 @@ class CpaPoolStateDBTests(unittest.TestCase):
             self.assertEqual(reopened.list_breakers()[0]["state"], "open")
             self.assertEqual(reopened.list_actions()[0]["action"], "promoted")
 
+    def test_governance_actions_support_count_and_offset_pagination(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = PoolStateDB(Path(temp) / "pool.sqlite3")
+            for index in range(25):
+                repo.add_action(
+                    {
+                        "action_ts": index + 1,
+                        "email": f"page-{index:02d}@example.com",
+                        "action": "scheduled",
+                    }
+                )
+
+            first = repo.list_actions(limit=10)
+            second = repo.list_actions(limit=10, offset=10)
+            third = repo.list_actions(limit=10, offset=20)
+
+            self.assertEqual(repo.count_actions(), 25)
+            self.assertEqual([len(first), len(second), len(third)], [10, 10, 5])
+            self.assertEqual(first[0]["email"], "page-24@example.com")
+            self.assertEqual(second[0]["email"], "page-14@example.com")
+            self.assertEqual(third[-1]["email"], "page-00@example.com")
+
     def test_history_retention_prunes_only_expired_rows(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = PoolStateDB(Path(temp) / "pool.sqlite3")

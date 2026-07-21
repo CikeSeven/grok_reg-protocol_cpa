@@ -36,6 +36,7 @@ class WebuiCpaPoolRefillTests(unittest.TestCase):
                 "refill_probe_chat": True,
                 "refill_low_water_hold_sec": 0,
                 "refill_low_water_rounds": 1,
+                "refill_emergency_threshold_percent": 0,
             }
         )
         settings.update(overrides)
@@ -241,6 +242,62 @@ class WebuiCpaPoolRefillTests(unittest.TestCase):
             value = cpa_pool.CpaPoolMonitor._rolling_refill_yield(self._settings())
 
         self.assertEqual(value, 0.2)
+
+    def test_emergency_refill_bypasses_waiting_and_daily_soft_limit(self):
+        monitor = self._monitor()
+        settings = self._settings(
+            refill_target_active=100,
+            refill_max_per_scan=40,
+            refill_daily_limit=5,
+            refill_emergency_threshold_percent=90,
+            refill_low_water_rounds=5,
+            refill_low_water_hold_sec=3600,
+        )
+        today = cpa_pool.datetime.now().astimezone().date().isoformat()
+        monitor._repo().set_meta("refill_daily", {"date": today, "count": 5})
+        with (
+            mock.patch("webui.cpa_pool.store.list_cpa_index", return_value=self._active_index(total=10)),
+            mock.patch("webui.cpa_pool.store.load_config_raw", return_value=self._register_config()),
+            mock.patch.object(monitor, "list_quarantine", return_value={"items": []}),
+            mock.patch.object(monitor, "_backfill_candidate_emails", return_value=[]),
+            mock.patch("webui.jobs.runner.active_job", return_value=None),
+            mock.patch("webui.jobs.runner.start_register", return_value={"id": "emergency1"}) as start_register,
+        ):
+            result = monitor._maybe_start_refill(settings=settings, initial_total=10, trigger="auto")
+
+        self.assertTrue(result["started"])
+        self.assertTrue(result["emergency"])
+        self.assertTrue(result["daily_soft_limit_bypassed"])
+        self.assertEqual(result["daily_used"], 5)
+        self.assertEqual(result["limit"], 40)
+        self.assertNotIn("waiting_for_rounds", result)
+        self.assertEqual(start_register.call_args.args[0]["extra"], 40)
+
+    def test_controller_continues_with_another_batch_after_job_finishes(self):
+        monitor = self._monitor()
+        settings = self._settings(
+            refill_target_active=100,
+            refill_max_per_scan=40,
+            refill_daily_limit=5,
+            refill_emergency_threshold_percent=90,
+            refill_controller_interval_sec=30,
+        )
+        with (
+            mock.patch("webui.cpa_pool.store.list_cpa_index", return_value=self._active_index(total=10)),
+            mock.patch("webui.cpa_pool.store.load_config_raw", return_value=self._register_config()),
+            mock.patch.object(monitor, "list_quarantine", return_value={"items": []}),
+            mock.patch.object(monitor, "_backfill_candidate_emails", return_value=[]),
+            mock.patch("webui.jobs.runner.active_job", return_value=None),
+            mock.patch("webui.jobs.runner.start_register", side_effect=[{"id": "batch1"}, {"id": "batch2"}]) as start_register,
+        ):
+            monitor._run_refill_controller(settings, now=100)
+            monitor._run_refill_controller(settings, now=120)
+            monitor._run_refill_controller(settings, now=131)
+
+        self.assertEqual(start_register.call_count, 2)
+        self.assertEqual([call.args[0]["extra"] for call in start_register.call_args_list], [40, 40])
+        self.assertEqual(monitor._refill_status["trigger"], "controller")
+        self.assertTrue(monitor._refill_status["emergency"])
 
     def test_quarantine_manifest_is_not_counted_as_an_account(self):
         monitor = self._monitor()

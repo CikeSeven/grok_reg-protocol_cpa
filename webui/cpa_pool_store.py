@@ -340,12 +340,18 @@ class PoolStateDB:
                 ),
             )
 
-    def list_actions(self, *, limit: int = 100) -> list[dict[str, Any]]:
+    def count_actions(self) -> int:
+        self.initialize()
+        with self._connection() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM governance_actions").fetchone()
+        return int(row[0] or 0) if row is not None else 0
+
+    def list_actions(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         self.initialize()
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT action_json FROM governance_actions ORDER BY action_at DESC LIMIT ?",
-                (max(1, min(int(limit), 1000)),),
+                "SELECT action_json FROM governance_actions ORDER BY action_at DESC, id DESC LIMIT ? OFFSET ?",
+                (max(1, min(int(limit), 1000)), max(0, int(offset))),
             ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:

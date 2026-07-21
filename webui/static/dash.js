@@ -171,7 +171,7 @@
       cpa_pool_scan_interval_sec: +$("setInterval").value || 300,
       cpa_pool_scan_workers: +$("setWorkers").value || 16,
       cpa_pool_refill_target_active: +$("setRefillTarget").value || 0,
-      cpa_pool_refill_max_per_scan: +$("setRefillMax").value || 30,
+      cpa_pool_refill_max_per_scan: +$("setRefillMax").value || 200,
       cpa_pool_auto_scan: $("setAutoScan").checked,
       cpa_pool_auto_refill: $("setAutoRefill").checked,
     };

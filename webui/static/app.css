@@ -427,6 +427,9 @@ h2 { margin: 0; font-size: 14.5px; font-weight: 650; }
 }
 .status-pair { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
 .governance-history-wrap { min-height: 160px; }
+.governance-history-foot { margin-top: 0; }
+.page-size-control { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.page-size-control .select { width: auto; min-width: 68px; padding-block: 6px; }
 .table-clip { display: block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scan-cell .chip {
   width: max-content;
@@ -1591,6 +1594,8 @@ dialog.mail-reader-dialog {
 }
 @media (max-width: 520px) {
   .panel-head { min-height: 48px; padding: 8px 12px; flex-wrap: wrap; }
+  .governance-history-foot { flex-wrap: wrap; gap: 8px; }
+  .governance-history-foot .pager { width: 100%; justify-content: space-between; gap: 6px; }
   .panel-head h2 { flex: 0 0 auto; white-space: nowrap; }
   .panel-head > .hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pool-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }

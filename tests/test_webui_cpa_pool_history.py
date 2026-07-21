@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from webui import cpa_pool
@@ -74,6 +76,28 @@ class WebuiCpaPoolHistoryTests(unittest.TestCase):
         self.assertEqual(all_items["total"], 3)
         self.assertEqual(all_items["total_pages"], 2)
         self.assertEqual([i["id"] for i in all_items["items"]], ["scan-error", "scan-warn"])
+
+    def test_governance_actions_default_to_ten_rows_per_page(self):
+        with tempfile.TemporaryDirectory() as temp:
+            monitor = self._monitor()
+            monitor._state_path = Path(temp) / "cpa_pool_state.json"
+            for index in range(23):
+                monitor._repo().add_action(
+                    {
+                        "action_ts": index + 1,
+                        "email": f"audit-{index:02d}@example.com",
+                        "action": "scheduled",
+                    }
+                )
+
+            first = monitor.list_actions()
+            last = monitor.list_actions(page=3)
+
+        self.assertEqual(first["page_size"], 10)
+        self.assertEqual(first["total"], 23)
+        self.assertEqual(first["total_pages"], 3)
+        self.assertEqual(len(first["items"]), 10)
+        self.assertEqual(len(last["items"]), 3)
 
 
 if __name__ == "__main__":
