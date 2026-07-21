@@ -10,6 +10,11 @@ on:
         required: true
         default: true
         type: boolean
+      deploy_cliproxy:
+        description: Build and deploy the managed CLIProxyAPI fork
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -36,6 +41,12 @@ jobs:
       DEPLOY_HEALTH_URL: ${{ vars.DEPLOY_HEALTH_URL }}
       DEPLOY_BACKUP_DIR: ${{ vars.DEPLOY_BACKUP_DIR || '/root/grok_reg_backups' }}
       DEPLOY_BACKUP_KEEP: ${{ vars.DEPLOY_BACKUP_KEEP || '20' }}
+      DEPLOY_CLIPROXY: ${{ inputs.deploy_cliproxy && '1' || '0' }}
+      CLIPROXY_REPOSITORY: ${{ vars.CLIPROXY_REPOSITORY || 'CikeSeven/CLIProxyAPI' }}
+      CLIPROXY_REF: ${{ vars.CLIPROXY_REF || 'main' }}
+      CLIPROXY_DEPLOY_PATH: ${{ vars.CLIPROXY_DEPLOY_PATH || '/root/cliproxyapi' }}
+      CLIPROXY_SERVICE: ${{ vars.CLIPROXY_SERVICE || 'cliproxyapi.service' }}
+      CPA_POOL_CLI_MANAGEMENT_KEY: ${{ secrets.CPA_POOL_CLI_MANAGEMENT_KEY }}
       DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
 
@@ -55,15 +66,48 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Check out managed CLIProxyAPI
+        if: ${{ inputs.deploy_cliproxy }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.CLIPROXY_REPOSITORY }}
+          ref: ${{ env.CLIPROXY_REF }}
+          fetch-depth: 0
+          path: .deploy-src/CLIProxyAPI
+
+      - name: Install Go
+        if: ${{ inputs.deploy_cliproxy }}
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: .deploy-src/CLIProxyAPI/go.mod
+          cache-dependency-path: .deploy-src/CLIProxyAPI/go.sum
+
       - name: Run checks
         if: ${{ inputs.run_tests }}
         run: |
           set -euo pipefail
           uv sync --frozen
           uv run python -m unittest discover -s tests -p 'test_*.py'
-          uv run python -m py_compile account_convert.py webui/app.py webui/store.py webui/cpa_pool.py webui/jobs.py webui/timeutil.py webui/mail_tools.py
+          uv run python -m py_compile account_convert.py webui/app.py webui/store.py webui/cpa_pool.py webui/cpa_health.py webui/cpa_pool_store.py webui/cliproxy_management.py webui/jobs.py webui/timeutil.py webui/mail_tools.py
           node --check webui/static/app.js
+          node --check webui/static/dash.js
           python -m json.tool config.example.json >/dev/null
+          bash -n .github/scripts/deploy-remote.sh
+
+      - name: Test and build CLIProxyAPI
+        if: ${{ inputs.deploy_cliproxy }}
+        working-directory: .deploy-src/CLIProxyAPI
+        run: |
+          set -euo pipefail
+          go test ./internal/api/handlers/management ./internal/runtime/executor ./sdk/cliproxy/auth
+          version="$(git describe --tags --always --dirty | sed 's/^v//')"
+          commit="$(git rev-parse --short HEAD)"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false \
+            -ldflags="-s -w -X main.Version=${version} -X main.Commit=${commit} -X main.BuildDate=${build_date}" \
+            -o "$RUNNER_TEMP/cli-proxy-api" ./cmd/server/
+          chmod 755 "$RUNNER_TEMP/cli-proxy-api"
+          "$RUNNER_TEMP/cli-proxy-api" -h >/dev/null 2>&1
 
       - name: Validate deployment configuration
         run: |
@@ -82,6 +126,11 @@ jobs:
           [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != "/" ]] || { echo "::error::DEPLOY_PATH must be an absolute non-root path"; exit 1; }
           [[ "$DEPLOY_SERVICE" =~ ^[A-Za-z0-9_.@-]+$ ]] || { echo "::error::DEPLOY_SERVICE contains invalid characters"; exit 1; }
           [[ "$DEPLOY_BACKUP_KEEP" =~ ^[0-9]+$ ]] || { echo "::error::DEPLOY_BACKUP_KEEP must be numeric"; exit 1; }
+          if [[ "$DEPLOY_CLIPROXY" == "1" ]]; then
+            [[ "$CLIPROXY_DEPLOY_PATH" == /* && "$CLIPROXY_DEPLOY_PATH" != "/" ]] || { echo "::error::CLIPROXY_DEPLOY_PATH must be an absolute non-root path"; exit 1; }
+            [[ "$CLIPROXY_SERVICE" =~ ^[A-Za-z0-9_.@-]+$ ]] || { echo "::error::CLIPROXY_SERVICE contains invalid characters"; exit 1; }
+            [[ "$CPA_POOL_CLI_MANAGEMENT_KEY" =~ ^[A-Za-z0-9._~-]{32,}$ ]] || { echo "::error::CPA_POOL_CLI_MANAGEMENT_KEY must be at least 32 URL-safe characters"; exit 1; }
+          fi
 
       - name: Configure SSH
         run: |
@@ -112,23 +161,37 @@ jobs:
           archive="$RUNNER_TEMP/grok-reg-${GITHUB_SHA}.tar.gz"
           remote_archive="/tmp/grok-reg-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
           remote_script="/tmp/grok-reg-deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.sh"
+          remote_cliproxy="/tmp/cli-proxy-api-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          remote_management_env="/tmp/cliproxy-management-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.env"
           git archive --format=tar.gz --output="$archive" "$GITHUB_SHA"
           sha256sum "$archive"
+          if [[ "$DEPLOY_CLIPROXY" == "1" ]]; then
+            umask 077
+            printf 'MANAGEMENT_PASSWORD=%s\nCPA_POOL_CLI_MANAGEMENT_KEY=%s\n' \
+              "$CPA_POOL_CLI_MANAGEMENT_KEY" "$CPA_POOL_CLI_MANAGEMENT_KEY" \
+              >"$RUNNER_TEMP/cliproxy-management.env"
+          fi
           echo "archive=$archive" >>"$GITHUB_OUTPUT"
           echo "remote_archive=$remote_archive" >>"$GITHUB_OUTPUT"
           echo "remote_script=$remote_script" >>"$GITHUB_OUTPUT"
+          echo "remote_cliproxy=$remote_cliproxy" >>"$GITHUB_OUTPUT"
+          echo "remote_management_env=$remote_management_env" >>"$GITHUB_OUTPUT"
 
       - name: Upload release
         run: |
           set -euo pipefail
           scp "${{ steps.package.outputs.archive }}" "deploy-target:${{ steps.package.outputs.remote_archive }}"
           scp .github/scripts/deploy-remote.sh "deploy-target:${{ steps.package.outputs.remote_script }}"
+          if [[ "$DEPLOY_CLIPROXY" == "1" ]]; then
+            scp "$RUNNER_TEMP/cli-proxy-api" "deploy-target:${{ steps.package.outputs.remote_cliproxy }}"
+            scp "$RUNNER_TEMP/cliproxy-management.env" "deploy-target:${{ steps.package.outputs.remote_management_env }}"
+          fi
 
       - name: Deploy and verify
         run: |
           set -euo pipefail
           printf -v remote_command \
-            'DEPLOY_PATH=%q DEPLOY_SERVICE=%q DEPLOY_HEALTH_URL=%q DEPLOY_BACKUP_DIR=%q DEPLOY_BACKUP_KEEP=%q RELEASE_ARCHIVE=%q DEPLOY_SHA=%q bash %q' \
+            'DEPLOY_PATH=%q DEPLOY_SERVICE=%q DEPLOY_HEALTH_URL=%q DEPLOY_BACKUP_DIR=%q DEPLOY_BACKUP_KEEP=%q RELEASE_ARCHIVE=%q DEPLOY_SHA=%q DEPLOY_CLIPROXY=%q CLIPROXY_DEPLOY_PATH=%q CLIPROXY_SERVICE=%q CLIPROXY_BINARY=%q CLIPROXY_MANAGEMENT_ENV=%q bash %q' \
             "$DEPLOY_PATH" \
             "$DEPLOY_SERVICE" \
             "$DEPLOY_HEALTH_URL" \
@@ -136,6 +199,11 @@ jobs:
             "$DEPLOY_BACKUP_KEEP" \
             '${{ steps.package.outputs.remote_archive }}' \
             "$GITHUB_SHA" \
+            "$DEPLOY_CLIPROXY" \
+            "$CLIPROXY_DEPLOY_PATH" \
+            "$CLIPROXY_SERVICE" \
+            '${{ steps.package.outputs.remote_cliproxy }}' \
+            '${{ steps.package.outputs.remote_management_env }}' \
             '${{ steps.package.outputs.remote_script }}'
           ssh deploy-target "$remote_command"
 
@@ -143,7 +211,7 @@ jobs:
         if: ${{ always() }}
         run: |
           ssh deploy-target \
-            "rm -f -- '${{ steps.package.outputs.remote_archive }}' '${{ steps.package.outputs.remote_script }}'" \
+            "rm -f -- '${{ steps.package.outputs.remote_archive }}' '${{ steps.package.outputs.remote_script }}' '${{ steps.package.outputs.remote_cliproxy }}' '${{ steps.package.outputs.remote_management_env }}'" \
             2>/dev/null || true
 
       - name: Deployment summary
@@ -155,4 +223,5 @@ jobs:
             echo "- Service: \`${DEPLOY_SERVICE}\`"
             echo "- Target: \`${DEPLOY_PATH}\`"
             echo "- Health check: \`${DEPLOY_HEALTH_URL}\`"
+            echo "- CLIProxyAPI: \`${DEPLOY_CLIPROXY}\`"
           } >>"$GITHUB_STEP_SUMMARY"
