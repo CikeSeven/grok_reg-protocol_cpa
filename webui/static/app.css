@@ -1069,87 +1069,110 @@ dialog::backdrop { background: rgba(29, 36, 56, 0.35); backdrop-filter: blur(3px
 
 /* ═══ Tools ═══ */
 .tool-tabs {
-  display: flex;
-  align-items: flex-end;
-  gap: 22px;
-  margin: -4px 0 18px;
-  border-bottom: 1px solid var(--line);
+  display: inline-flex;
+  gap: 4px;
+  margin: 0 0 18px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
 }
 .tool-tabs button {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 42px;
-  padding: 0 2px;
+  min-height: 34px;
+  padding: 0 16px;
   border: 0;
+  border-radius: 999px;
   background: transparent;
   color: var(--muted);
   font: 600 13px/1 var(--font);
   cursor: pointer;
+  transition: color 0.15s, background 0.15s, box-shadow 0.15s;
 }
-.tool-tabs button::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  background: transparent;
+.tool-tabs button::after { display: none; }
+.tool-tabs button:hover { color: var(--text); background: var(--view-soft, rgba(236, 72, 153, 0.09)); }
+.tool-tabs button.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--view, var(--pink)), #7c5cf0);
+  box-shadow: 0 3px 12px rgba(236, 72, 153, 0.35);
 }
-.tool-tabs button:hover { color: var(--text); }
-.tool-tabs button.active { color: var(--view, var(--pink)); }
-.tool-tabs button.active::after { background: var(--view, var(--pink)); }
-.tool-tabs svg { width: 16px; height: 16px; }
+.tool-tabs button.active svg { color: #fff; }
+.tool-tabs svg { width: 15px; height: 15px; color: var(--view, var(--pink)); }
 .tools-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 16px; }
 .mail-tool { display: grid; gap: 16px; }
 .tool-metrics {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  gap: 12px;
 }
 .tool-metrics > div {
+  position: relative;
   min-width: 0;
-  padding: 13px 15px;
-  border-right: 1px solid var(--line);
+  padding: 14px 16px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
   display: grid;
-  gap: 5px;
+  gap: 6px;
+  background:
+    linear-gradient(155deg, var(--tm-bg, rgba(124, 92, 240, 0.1)), rgba(255, 255, 255, 0.4) 60%),
+    var(--panel);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: transform 0.2s, box-shadow 0.2s;
 }
-.tool-metrics > div:last-child { border-right: 0; }
-.tool-metrics span { color: var(--muted); font-size: 11px; }
-.tool-metrics strong { color: var(--text); font: 650 20px/1 var(--mono); }
+.tool-metrics > div:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.tool-metrics > div::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: var(--tm-c, var(--violet));
+}
+.tool-metrics > div:nth-child(1) { --tm-c: #7c5cf0; --tm-bg: rgba(124, 92, 240, 0.13); }
+.tool-metrics > div:nth-child(2) { --tm-c: #3b82f6; --tm-bg: rgba(59, 130, 246, 0.13); }
+.tool-metrics > div:nth-child(3) { --tm-c: #0ea5e9; --tm-bg: rgba(14, 165, 233, 0.13); }
+.tool-metrics > div:nth-child(4) { --tm-c: #10b981; --tm-bg: rgba(16, 185, 129, 0.13); }
+.tool-metrics > div:nth-child(5) { --tm-c: #f43f5e; --tm-bg: rgba(244, 63, 94, 0.11); }
+.tool-metrics > div:nth-child(6) { --tm-c: #f59e0b; --tm-bg: rgba(245, 158, 11, 0.14); }
+.tool-metrics span { color: var(--muted); font-size: 12px; font-weight: 550; }
+.tool-metrics strong { color: var(--tm-c, var(--text)); font: 700 22px/1 var(--mono); font-variant-numeric: tabular-nums; }
 .panel-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .mail-tool-panel .panel-head { gap: 14px; }
 .mail-tool-panel .panel-head h2 { margin-right: auto; }
-.mail-tool-body { padding-top: 14px; }
+.mail-tool-body { padding: 0; }
 .mail-tool-task {
-  padding: 11px 18px 12px;
+  padding: 12px 18px 13px;
   border-bottom: 1px solid var(--line);
-  background: var(--panel-soft);
+  background: linear-gradient(90deg, var(--view-soft, rgba(236, 72, 153, 0.08)), transparent 60%), var(--panel-soft);
 }
 .mail-tool-task-line {
   display: grid;
   grid-template-columns: 8px auto auto minmax(0, 1fr);
   align-items: center;
   gap: 9px;
-  margin-bottom: 8px;
+  margin-bottom: 9px;
 }
 .mail-tool-task-line strong { font-size: 12px; }
 .mail-tool-task-line .mono { font-size: 11px; }
 .mail-tool-task-current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .progress-track {
   position: relative;
-  height: 3px;
+  height: 6px;
   overflow: hidden;
-  background: var(--line);
+  border-radius: 3px;
+  background: #e6eaf4;
 }
 .progress-track i {
   display: block;
   width: 0;
   height: 100%;
-  background: var(--view, var(--pink));
+  border-radius: 3px;
+  background: linear-gradient(135deg, var(--view, var(--pink)), #7c5cf0);
+  box-shadow: 0 0 10px rgba(236, 72, 153, 0.4);
   transition: width 0.25s ease;
 }
 .mail-tool-table { min-width: 1120px; }
@@ -1500,8 +1523,6 @@ dialog.mail-reader-dialog {
   .kpis { grid-template-columns: repeat(3, 1fr); }
   .console-grid, .settings-grid-2col, .tools-grid { grid-template-columns: 1fr; }
   .tool-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .tool-metrics > div:nth-child(3) { border-right: 0; }
-  .tool-metrics > div:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
 }
 @media (max-width: 900px) {
   .app { display: block; }
