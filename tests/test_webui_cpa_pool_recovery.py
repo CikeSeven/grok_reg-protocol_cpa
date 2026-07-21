@@ -42,8 +42,12 @@ class WebuiCpaPoolRecoveryTests(unittest.TestCase):
     def tearDown(self) -> None:
         for monitor in self._monitors:
             monitor._scheduler_stop.set()
-            if monitor._scheduler_thread and monitor._scheduler_thread.is_alive():
+            monitor._cancel.set()
+        for monitor in self._monitors:
+            if monitor._scheduler_thread:
                 monitor._scheduler_thread.join(timeout=2)
+            if monitor._scan_thread:
+                monitor._scan_thread.join(timeout=5)
         self._state_patch.stop()
         self._tmp.cleanup()
 
@@ -100,7 +104,7 @@ class WebuiCpaPoolRecoveryTests(unittest.TestCase):
         self.assertEqual(second_payload["scan_id"], "second-state")
 
     def test_legacy_state_derives_deadline_from_last_finish(self):
-        finished_at = "2026-07-21T02:00:00+08:00"
+        finished_at = cpa_pool._utc_now()
         self.state_path.write_text(
             json.dumps(
                 {
