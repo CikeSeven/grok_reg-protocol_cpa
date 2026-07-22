@@ -279,6 +279,20 @@ PY
   echo "CLIProxyAPI healthy: xai_loaded=${xai_loaded}"
 fi
 
+# 如果 8787 上挂着手工启动的旧 WebUI，单纯 restart systemd 可能健康检查命中旧进程。
+# 部署前先清理 DEPLOY_HEALTH_URL 对应的本机监听端口，再交给 systemd 拉起当前 release。
+if [[ "$DEPLOY_HEALTH_URL" =~ ^https?://(127\.0\.0\.1|localhost):([0-9]+)(/|$) ]]; then
+  health_port="${BASH_REMATCH[2]}"
+  if command -v fuser >/dev/null; then
+    fuser -k "${health_port}/tcp" >/dev/null 2>&1 || true
+  else
+    while IFS= read -r pid; do
+      [[ "$pid" =~ ^[0-9]+$ ]] && kill "$pid" >/dev/null 2>&1 || true
+    done < <(ss -ltnp "sport = :${health_port}" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u)
+  fi
+  sleep 0.5
+fi
+
 "${SYSTEMCTL[@]}" restart "$DEPLOY_SERVICE"
 "${SYSTEMCTL[@]}" is-active --quiet "$DEPLOY_SERVICE"
 
