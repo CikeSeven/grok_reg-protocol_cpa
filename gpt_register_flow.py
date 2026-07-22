@@ -193,6 +193,38 @@ async def _run_async(
             hops += 1
             final_resp = await session.get(loc, allow_redirects=False)
             loc = final_resp.headers.get("location", "")
+        final_url = str(final_resp.url) if final_resp is not None else ""
+        if "create-account/password" in final_url:
+            # OpenAI 新注册分支（灰度）：先弹「创建密码」页，此分支不发 OTP。
+            # 该页自带「Sign up with one-time code」入口
+            # （Remix action，intent=passwordless_signup_send_otp），
+            # POST 后服务端发码并回到 /email-verification。
+            log("3b. 命中密码优先分支，切换回验证码流程")
+            switch_resp = await session.post(
+                f"{AUTH_BASE}/create-account/password",
+                data={"intent": "passwordless_signup_send_otp"},
+                headers={
+                    "content-type": "application/x-www-form-urlencoded",
+                    "referer": final_url,
+                    "origin": AUTH_BASE,
+                },
+                allow_redirects=False,
+            )
+            if switch_resp.status_code not in (200, 204, 302):
+                raise GptRegisterError(
+                    "password_switch",
+                    f"HTTP {switch_resp.status_code}: {switch_resp.text[:200]}",
+                )
+            ev = await session.get(f"{AUTH_BASE}/email-verification", allow_redirects=False)
+            if ev.status_code != 200 or "one-time-code" not in ev.text:
+                raise GptRegisterError(
+                    "password_switch",
+                    f"切换验证码流程失败: HTTP {ev.status_code} {ev.headers.get('location', '')[:120]}",
+                )
+            otp_sent_at = time.time()
+            log("3c. 已切换回验证码流程，OTP 已发送")
+        elif "/log-in" in final_url or "login" in final_url.split("/")[-1]:
+            raise GptRegisterError("authorize", f"落入登录分支（邮箱可能已注册）: {final_url[:120]}")
         for cookie in session.cookies.jar:
             if cookie.name == "oai-did":
                 device_id = cookie.value
@@ -227,11 +259,26 @@ async def _run_async(
             ) from exc
         if isinstance(validate_data, dict) and validate_data.get("error"):
             raise GptRegisterError("validate", str(validate_data["error"])[:200])
+        # 严格校验：必须返回 continue_url 才算通过。
+        # 密码分支等错步状态下 validate 可能返回 200 + 当前页 JSON/HTML，
+        # 没有 error 字段，若放行会在 create_account 报 invalid_auth_step。
+        continue_url_v = (validate_data.get("continue_url") or "") if isinstance(validate_data, dict) else ""
+        if not continue_url_v:
+            page_type = ""
+            if isinstance(validate_data, dict):
+                page_type = str((validate_data.get("page") or {}).get("type") or "")
+            raise GptRegisterError(
+                "validate",
+                f"OTP validate 未返回 continue_url（page={page_type or 'unknown'}，可能命中密码分支）",
+            )
         log("5. OTP 校验通过")
         on_stage("otp_ready")
 
         # ── 4. about-you 页面上下文 ──
-        about_you_url = (validate_data.get("continue_url") or "") if isinstance(validate_data, dict) else ""
+        about_you_url = continue_url_v
+        if "create-account/password" in about_you_url:
+            # OTP 后仍要求设密码的灰度变体：本流程暂不支持，明确失败让任务换会话重试。
+            raise GptRegisterError("validate", "OTP 后仍要求创建密码（灰度变体），换会话重试")
         if about_you_url:
             try:
                 await session.get(about_you_url, headers={"referer": f"{AUTH_BASE}/email-verification"})
