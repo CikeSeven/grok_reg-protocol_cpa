@@ -222,6 +222,36 @@ def _resolve_group_id(base: str, api_key: str, group: str, proxy: str | None, lo
     raise RuntimeError(f"sub2api 分组不存在: {group}")
 
 
+def _http_session(proxy: str | None, timeout: float = 20):
+    from curl_cffi import requests as creq
+
+    kwargs: dict[str, Any] = {"impersonate": "chrome", "timeout": timeout}
+    if proxy:
+        kwargs["proxies"] = {"http": proxy, "https": proxy}
+    return creq.Session(**kwargs)
+
+
+def _is_transient_http_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        m in text
+        for m in (
+            "curl: (35)",
+            "curl: (28)",
+            "curl: (52)",
+            "curl: (56)",
+            "curl: (7)",
+            "tls",
+            "ssl",
+            "timeout",
+            "connection",
+            "eof",
+            "reset",
+            "wrong_version",
+        )
+    )
+
+
 def push_to_sub2api(
     *,
     sess_data: dict[str, Any],
@@ -237,6 +267,9 @@ def push_to_sub2api(
     sub2api_format = agent（默认）: credentials 用 Agent Identity auth.json
     （agent_runtime_id + Ed25519 私钥，长期有效，不依赖 session 过期时间）
     sub2api_format = oauth: credentials 用 session access_token（JWT，随 session 过期）
+
+    网络策略：sub2api 是自有基础设施，默认直连（sub2api_direct，默认开），
+    不经过注册代理（住宅代理 TLS 抖动大）；sub2api_retries 次重试（默认 3）。
     """
     from curl_cffi import requests as creq
 
@@ -246,7 +279,66 @@ def push_to_sub2api(
     if not base or not api_key:
         raise RuntimeError("sub2api_base / sub2api_api_key 未配置")
 
-    group_id = _resolve_group_id(base, api_key, str(cfg.get("sub2api_group_id") or ""), proxy, log)
+    try:
+        retries = max(1, int(cfg.get("sub2api_retries", 3) or 3))
+    except Exception:
+        retries = 3
+    use_direct = bool(cfg.get("sub2api_direct", True))
+    # 优先直连；若关闭直连则用注册代理，失败后再尝试直连兜底
+    proxy_candidates: list[str | None] = []
+    if use_direct:
+        proxy_candidates = [None, proxy] if proxy else [None]
+    else:
+        proxy_candidates = [proxy, None] if proxy else [None]
+
+    group_id = None
+    last_err: Exception | None = None
+
+    def _resolve_and_push(px: str | None) -> dict[str, Any]:
+        gid = _resolve_group_id(base, api_key, str(cfg.get("sub2api_group_id") or ""), px, log)
+        return _post_account(
+            base=base,
+            api_key=api_key,
+            cfg=cfg,
+            sess_data=sess_data,
+            email=email,
+            access_token=access_token,
+            auth_json=auth_json,
+            group_id=gid,
+            proxy=px,
+            log=log,
+        )
+
+    for px in proxy_candidates:
+        for attempt in range(1, retries + 1):
+            try:
+                result = _resolve_and_push(px)
+                group_id = result.get("_group_id")
+                via = "直连" if px is None else "代理"
+                log(f"[*] sub2api 推送成功: {email}（{via}，group={group_id or '默认'}）")
+                return result
+            except Exception as exc:
+                last_err = exc
+                if attempt < retries and _is_transient_http_error(exc):
+                    time.sleep(min(2 * attempt, 5))
+                    continue
+                break
+    raise RuntimeError(f"sub2api 推送失败: {last_err}")
+
+
+def _post_account(
+    *,
+    base: str,
+    api_key: str,
+    cfg: dict[str, Any],
+    sess_data: dict[str, Any],
+    email: str,
+    access_token: str,
+    auth_json: dict[str, Any] | None,
+    group_id: int | None,
+    proxy: str | None,
+    log: LogFn,
+) -> dict[str, Any]:
 
     fmt = str(cfg.get("sub2api_format") or "agent").strip().lower()
     if fmt == "agent":
@@ -309,8 +401,9 @@ def push_to_sub2api(
     )
     if r.status_code not in (200, 201):
         raise RuntimeError(f"sub2api 推送失败 HTTP {r.status_code}: {r.text[:200]}")
-    log(f"[*] sub2api 推送成功: {email}（{fmt} 格式，group={group_id or '默认'}）")
-    return r.json()
+    result = r.json()
+    result["_group_id"] = group_id
+    return result
 
 
 __all__ = [

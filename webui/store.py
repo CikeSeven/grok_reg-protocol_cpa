@@ -864,6 +864,8 @@ PUBLIC_CONFIG_KEYS = [
     "sub2api_api_key",
     "sub2api_group_id",
     "sub2api_format",
+    "sub2api_direct",
+    "sub2api_retries",
     "sub2api_concurrency",
     "sub2api_priority",
     "hotmail_accounts_file",
