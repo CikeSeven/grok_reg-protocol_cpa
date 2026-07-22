@@ -837,6 +837,7 @@ def overview(config: dict[str, Any] | None = None) -> dict[str, Any]:
         "mail_total": len(mail_items),
         "proxy_total": proxy_pool.list_proxies()["total"],
         "email_provider": str(cfg.get("email_provider") or ""),
+        "gpt_email_provider": str(cfg.get("gpt_email_provider") or ""),
         "proxy": str(cfg.get("proxy") or ""),
         "cpa_proxy": str(cfg.get("cpa_proxy") or ""),
         "register_headless": bool(cfg.get("register_headless", False)),
@@ -857,6 +858,7 @@ def overview(config: dict[str, Any] | None = None) -> dict[str, Any]:
 
 PUBLIC_CONFIG_KEYS = [
     "email_provider",
+    "gpt_email_provider",
     "defaultDomains",
     "gpt_agent_enabled",
     "sub2api_enabled",

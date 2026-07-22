@@ -2888,8 +2888,14 @@ def get_email_provider():
     return str(config.get("email_provider", "duckmail") or "duckmail").strip().lower()
 
 
-def get_email_and_token(api_key=None):
-    provider = get_email_provider()
+def resolve_email_provider(provider=None):
+    """显式 provider 覆盖（如 GPT 单独指定邮箱系统），空则跟随全局配置。"""
+    override = str(provider or "").strip().lower()
+    return override or get_email_provider()
+
+
+def get_email_and_token(api_key=None, provider=None):
+    provider = resolve_email_provider(provider)
     if provider in ("hotmail", "outlook", "outlookmail", "microsoft"):
         return hotmail_get_email_and_token()
     if provider == "yyds":
@@ -2935,8 +2941,9 @@ def get_oai_code(
     cancel_callback=None,
     resend_callback=None,
     issued_after=None,
+    provider=None,
 ):
-    provider = get_email_provider()
+    provider = resolve_email_provider(provider)
     if provider in ("hotmail", "outlook", "outlookmail", "microsoft"):
         return hotmail_get_oai_code(
             dev_token,

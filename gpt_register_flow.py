@@ -404,6 +404,8 @@ def run_gpt_register(
     gen_name, gen_bd, password = _gen_profile()
     name = name or gen_name
     birthdate = birthdate or gen_bd
+    # GPT 可单独指定邮箱系统（如 Grok 用域名邮箱、GPT 用微软邮箱），空则跟随全局
+    email_provider_override = str(cfg.get("gpt_email_provider") or "").strip() or None
 
     def get_code(issued_after: float | None = None) -> str:
         import grok_register_ttk as reg
@@ -417,6 +419,7 @@ def run_gpt_register(
                 log_callback=log,
                 cancel_callback=cancel,
                 issued_after=issued_after,
+                provider=email_provider_override,
             )
             reg.cf_note_otp_success(domain)
             return code

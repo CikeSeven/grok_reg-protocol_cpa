@@ -815,6 +815,9 @@ class JobRunner:
             headless = bool(job.options.get("headless", True))
             otp_timeout = float(job.options.get("otp_timeout") or 300)
             max_mail_retry = max(1, int(cfg.get("mail_retry_count", 3) or 3))
+            # GPT 可单独指定邮箱系统（如 Grok 用域名邮箱、GPT 用微软邮箱），空则跟随全局
+            gpt_email_provider = str(cfg.get("gpt_email_provider") or "").strip() or None
+            job.append_log(f"邮箱系统: {gpt_email_provider or '跟随全局 ' + reg.get_email_provider()}")
             job.append_log(f"GPT 失败重试: 每个目标最多换邮箱/新会话 {max_mail_retry} 次")
             idx_lock = threading.Lock()
             next_idx = [0]
@@ -861,7 +864,7 @@ class JobRunner:
                                 reg.set_thread_proxy(proxy)
                             else:
                                 reg.clear_thread_proxy()
-                            email, dev_token = reg.get_email_and_token()
+                            email, dev_token = reg.get_email_and_token(provider=gpt_email_provider)
                         except Exception as exc:
                             last_error = str(exc)
                             log(f"! 获取邮箱失败（尝试 {mail_try}/{max_mail_retry}）: {exc}")

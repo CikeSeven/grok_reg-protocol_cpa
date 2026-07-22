@@ -725,10 +725,11 @@ function renderGptFlow() {
 function renderGptOverview(o = {}) {
   if (!$("#gpt-m-mail")) return;
   const proxyTotal = state.proxies.length || Number(o.proxy_total || 0);
+  const gptProvider = o.gpt_email_provider || o.email_provider || "-";
   $("#gpt-m-mail").textContent = o.mail_total ?? 0;
-  $("#gpt-m-provider").textContent = o.email_provider || "-";
+  $("#gpt-m-provider").textContent = gptProvider;
   $("#gpt-m-proxies").textContent = proxyTotal;
-  $("#gpt-meta-provider").textContent = o.email_provider || "-";
+  $("#gpt-meta-provider").textContent = gptProvider;
   $("#gpt-meta-proxy").textContent = o.proxy || "-";
   $("#gpt-meta-browser").textContent = $("#gpt-headless")?.checked ? "headless" : "headed";
   if (typeof o.register_headless === "boolean" && !state._gptHeadlessSeeded) {
@@ -1457,6 +1458,17 @@ function fieldInput(key, label, type, value, isSet) {
       : "";
     return `<label><span>${esc(label)}</span><select class="select wide" data-config-key="${esc(key)}">${fallback}${options}</select></label>`;
   }
+  if (type === "gpt_provider") {
+    const current = String(value ?? "");
+    const all = [["", "跟随全局邮箱服务商"], ...PROVIDER_OPTIONS];
+    const options = all.map(([v, text]) =>
+      `<option value="${esc(v)}" ${v === current ? "selected" : ""}>${esc(text)}</option>`,
+    ).join("");
+    const fallback = current && !all.some(([v]) => v === current)
+      ? `<option value="${esc(current)}" selected>${esc(current)}（当前值）</option>`
+      : "";
+    return `<label><span>${esc(label)}</span><select class="select wide" data-config-key="${esc(key)}">${fallback}${options}</select></label>`;
+  }
   if (type === "turnstile_solver") {
     const current = String(value ?? "local");
     const options = TURNSTILE_SOLVER_OPTIONS.map(([v, text]) =>
@@ -1560,6 +1572,7 @@ const EXTRA_FIELDS = [
 EXTRA_FIELDS.forEach(([k, l, t]) => { if (!FIELD_MAP[k]) FIELD_MAP[k] = [k, l, t]; });
 
 const GPT_EXTRA_FIELDS = [
+  ["gpt_email_provider", "GPT 邮箱服务商（空=跟随全局）", "gpt_provider"],
   ["gpt_agent_enabled", "注册后生成 Codex agent 身份", "bool"],
   ["sub2api_enabled", "注册后推送 sub2api", "bool"],
   ["sub2api_base", "sub2api 地址", "text"],
@@ -1587,7 +1600,7 @@ const PAGE_SETTINGS = {
     title: "GPT 注册工作台配置",
     eyebrow: "GPT CONFIG",
     groups: [
-      ["邮箱与收码", ["email_provider", "hotmail_accounts_file", "hotmail_protocol", "hotmail_proxy", "hotmail_max_active_aliases_per_account", "mail_timeout", "mail_poll_interval", "mail_retry_count"]],
+      ["邮箱与收码", ["gpt_email_provider", "hotmail_accounts_file", "hotmail_protocol", "hotmail_proxy", "hotmail_max_active_aliases_per_account", "mail_timeout", "mail_poll_interval", "mail_retry_count"]],
       ["浏览器与代理", ["register_headless", "register_threads", "thread_start_interval", "proxy", "browser_timezone", "user_agent"]],
       ["Solver 预留", ["turnstile_solver_provider", "protocol_solver_url", "protocol_solver_pass_proxy", "protocol_solver_locale", "protocol_solver_accept_language", "protocol_solver_timezone"]],
       ["Agent 身份", ["gpt_agent_enabled"]],
