@@ -1,0 +1,127 @@
+name: Bootstrap GrokFree delivery
+
+run-name: Bootstrap GrokFree delivery on ${{ vars.DEPLOY_HOST }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-bootstrap-grokfree-delivery
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Install delivery deploy key and CPA environment
+    if: ${{ github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      CPA_POOL_CLI_MANAGEMENT_KEY: ${{ secrets.CPA_POOL_CLI_MANAGEMENT_KEY }}
+
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate bootstrap configuration
+        run: |
+          set -euo pipefail
+          required=(
+            DEPLOY_HOST DEPLOY_PORT DEPLOY_USER DEPLOY_SSH_KEY
+            DEPLOY_KNOWN_HOSTS CPA_POOL_CLI_MANAGEMENT_KEY
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing GitHub Actions configuration: ${name}"
+              exit 1
+            fi
+          done
+          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]] || {
+            echo "::error::DEPLOY_PORT must be numeric"
+            exit 1
+          }
+          [[ "$CPA_POOL_CLI_MANAGEMENT_KEY" =~ ^[A-Za-z0-9._~-]{32,}$ ]] || {
+            echo "::error::CPA_POOL_CLI_MANAGEMENT_KEY must be a URL-safe value of at least 32 characters"
+            exit 1
+          }
+          public_key="$(tr -d '\r\n' <.github/deploy-keys/grokfree-delivery.pub)"
+          [[ "$public_key" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+\ grokfree-delivery-github-actions$ ]] || {
+            echo "::error::Invalid delivery public key"
+            exit 1
+          }
+          bash -n .github/scripts/bootstrap-grokfree-delivery.sh
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" >"$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          cat >"$HOME/.ssh/config" <<EOF
+          Host deploy-target
+            HostName ${DEPLOY_HOST}
+            Port ${DEPLOY_PORT}
+            User ${DEPLOY_USER}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            LogLevel ERROR
+          EOF
+          chmod 600 "$HOME/.ssh/config"
+          ssh deploy-target 'printf connected'
+
+      - name: Prepare and upload bootstrap files
+        id: bootstrap
+        run: |
+          set -euo pipefail
+          remote_key="/tmp/grokfree-delivery-key-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.pub"
+          remote_env="/tmp/grokfree-delivery-cpa-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.env"
+          remote_script="/tmp/grokfree-delivery-bootstrap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.sh"
+          umask 077
+          printf 'CPA_MANAGEMENT_KEY=%s\n' "$CPA_POOL_CLI_MANAGEMENT_KEY" \
+            >"$RUNNER_TEMP/grokfree-delivery-cpa.env"
+          scp .github/deploy-keys/grokfree-delivery.pub "deploy-target:${remote_key}"
+          scp "$RUNNER_TEMP/grokfree-delivery-cpa.env" "deploy-target:${remote_env}"
+          scp .github/scripts/bootstrap-grokfree-delivery.sh "deploy-target:${remote_script}"
+          echo "remote_key=$remote_key" >>"$GITHUB_OUTPUT"
+          echo "remote_env=$remote_env" >>"$GITHUB_OUTPUT"
+          echo "remote_script=$remote_script" >>"$GITHUB_OUTPUT"
+
+      - name: Bootstrap delivery deployment access
+        run: |
+          set -euo pipefail
+          printf -v remote_command \
+            'DELIVERY_PUBLIC_KEY_FILE=%q DELIVERY_CPA_ENV_FILE=%q bash %q' \
+            '${{ steps.bootstrap.outputs.remote_key }}' \
+            '${{ steps.bootstrap.outputs.remote_env }}' \
+            '${{ steps.bootstrap.outputs.remote_script }}'
+          ssh deploy-target "$remote_command"
+
+      - name: Clean uploaded temporary files
+        if: ${{ always() && steps.bootstrap.outputs.remote_script != '' }}
+        run: |
+          ssh deploy-target \
+            "rm -f -- '${{ steps.bootstrap.outputs.remote_key }}' '${{ steps.bootstrap.outputs.remote_env }}' '${{ steps.bootstrap.outputs.remote_script }}'" \
+            2>/dev/null || true
+
+      - name: Bootstrap summary
+        run: |
+          {
+            echo '### GrokFree delivery bootstrap completed'
+            echo
+            echo '- Dedicated deployment key installed or rotated'
+            echo '- CPA environment prepared without exposing the management key'
+            echo '- Existing GrokFree and CLIProxyAPI services were not restarted'
+          } >>"$GITHUB_STEP_SUMMARY"
