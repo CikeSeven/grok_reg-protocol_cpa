@@ -314,6 +314,50 @@ class CpaPoolGovernanceV2Tests(unittest.TestCase):
             self.assertEqual(payload["priority"], 100)
             self.assertFalse(payload["disabled"])
 
+    def test_rebalance_promotes_reserve_until_main_target_even_above_low_water(self):
+        paths = []
+        for index in range(9):
+            email = f"main-target-{index}@example.com"
+            path = self._auth_file(email)
+            paths.append(path)
+            self._main_state(email, path)
+        reserve_paths = []
+        for index in range(2):
+            email = f"reserve-target-{index}@example.com"
+            path = self._auth_file(email, priority=50)
+            paths.append(path)
+            reserve_paths.append(path)
+            state = default_state(email, path=str(path))
+            state.update(
+                {
+                    "tier": "reserve",
+                    "health_status": "healthy",
+                    "desired_priority": 50,
+                    "desired_disabled": False,
+                    "actual_priority": 50,
+                    "actual_disabled": False,
+                    "governance_eligible": True,
+                    "last_success_at": cpa_pool._utc_now(),
+                }
+            )
+            self.monitor._repo().upsert_account(state)
+
+        inventory = {
+            path.stem.removeprefix("xai-"): {"email": path.stem.removeprefix("xai-"), "path": str(path)}
+            for path in paths
+        }
+        with mock.patch("webui.cpa_pool.store.list_cpa_index", return_value=inventory):
+            result = self.monitor._rebalance_tiers(
+                {**self.settings, "refill_target_active": 10, "main_low_water_percent": 90}
+            )
+
+        self.assertEqual(result["promoted"], 1)
+        promoted = [
+            path for path in reserve_paths
+            if json.loads(path.read_text(encoding="utf-8")).get("priority") == 100
+        ]
+        self.assertEqual(len(promoted), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2683,6 +2683,10 @@ class CpaPoolMonitor:
                 inflight = max(0, planned - done) if str(options.get("source") or "") == "cpa_pool_auto_refill" else 0
         except Exception:
             active_job = None
+        main_gap = max(0, target - ready_main)
+        promotable_reserve = min(main_gap, routeable_reserve)
+        main_gap_after_reserve = max(0, main_gap - promotable_reserve)
+        reserve_after_promotion = max(0, routeable_reserve - promotable_reserve)
         projected_capacity = ready_main + routeable_reserve + protected_cooling + inflight * expected_yield
         gap = max(0, math.ceil(capacity_target - projected_capacity))
         eligible_baseline = [state for state in managed_states if str(state.get("tier") or "") != "manual_disabled"]
@@ -2702,6 +2706,10 @@ class CpaPoolMonitor:
             "reserve_target": reserve_target,
             "capacity_target": capacity_target,
             "current": ready_main,
+            "main_gap": main_gap,
+            "promotable_reserve": promotable_reserve,
+            "main_gap_after_reserve": main_gap_after_reserve,
+            "reserve_after_promotion": reserve_after_promotion,
             "projected": round(projected_capacity, 2),
             "routeable_reserve": routeable_reserve,
             "protected_cooling": protected_cooling,
@@ -3018,8 +3026,9 @@ class CpaPoolMonitor:
         low_water = math.floor(target * int(settings.get("main_low_water_percent") or 90) / 100)
         now = time.time()
 
-        if len(main) < low_water and reserve:
-            needed = min(50, target - len(main), len(reserve))
+        if len(main) < target and reserve:
+            promotion_batch = _coerce_int(settings.get("refill_max_per_scan"), 200, min_v=1, max_v=10000)
+            needed = min(promotion_batch, target - len(main), len(reserve))
             reserve.sort(key=lambda state: str(state.get("last_success_at") or ""), reverse=True)
             for state in reserve[:needed]:
                 previous_tier = str(state.get("tier") or "reserve")
