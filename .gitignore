@@ -34,3 +34,5 @@ cookies/
 screenshots/
 *.log
 *.bak
+gpt_auths/
+gpt_agents/
