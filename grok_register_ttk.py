@@ -1872,8 +1872,12 @@ def cloudmail_get_oai_code(
     deadline = time.time() + timeout
     seen_attempts = {}
     next_resend_at = time.time() + 60
+    round_no = 0
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
+        round_no += 1
+        # 日志节流：0.3s 短轮询高频，仅首轮与每 40 轮输出一次
+        verbose = round_no == 1 or round_no % 40 == 0
         if resend_callback and time.time() >= next_resend_at:
             try:
                 resend_callback()
@@ -1902,8 +1906,8 @@ def cloudmail_get_oai_code(
                     pass
             sleep_with_cancel(current_interval, cancel_callback)
             continue
-        if log_callback:
-            log_callback(f"[Debug] CloudMail 本轮邮件数量: {len(messages)}")
+        if verbose and log_callback:
+            log_callback(f"[Debug] CloudMail 本轮邮件数量: {len(messages)}（第 {round_no} 轮）")
         for msg in messages:
             msg_id = msg.get("emailId") or msg.get("id") or msg.get("messageId")
             if not msg_id:
@@ -2723,9 +2727,14 @@ def hotmail_get_oai_code(
     deadline = time.time() + timeout
     access_token = None
     next_resend_at = time.time() + 60
+    round_no = 0
 
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
+        round_no += 1
+        # 日志节流：高并发下每轮都输出会刷爆任务日志/前端，
+        # 仅首轮与每 12 轮输出一次详细轮询信息；错误始终输出。
+        verbose = round_no == 1 or round_no % 12 == 0
         if resend_callback and time.time() >= next_resend_at:
             try:
                 resend_started = time.time()
@@ -2752,7 +2761,7 @@ def hotmail_get_oai_code(
                     mailbox_email,
                     email,
                     access_token,
-                    log_callback=log_callback,
+                    log_callback=log_callback if verbose else None,
                     issued_after=issued_after,
                 )
             else:
@@ -2778,8 +2787,8 @@ def hotmail_get_oai_code(
                     raise Exception("; ".join(host_errors))
             if code:
                 return code
-            if log_callback:
-                log_callback(f"[Debug] Hotmail/Outlook 本轮未找到验证码: {email}")
+            if verbose and log_callback:
+                log_callback(f"[Debug] Hotmail/Outlook 未收到验证码（第 {round_no} 轮轮询中）: {email}")
         except Exception as exc:
             # OAuth/IMAP/Graph 临时失败时下一轮重新 refresh access_token。
             access_token = None
@@ -3047,8 +3056,12 @@ def cloudflare_get_oai_code(
     # 同一封邮件正文可能延迟可读，允许多次重试解析，避免偶发漏码
     seen_attempts = {}
     next_resend_at = time.time() + 35
+    round_no = 0
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
+        round_no += 1
+        # 日志节流：仅首轮与每 12 轮输出轮询信息，错误始终输出
+        verbose = round_no == 1 or round_no % 12 == 0
         if resend_callback and time.time() >= next_resend_at:
             try:
                 resend_callback()
@@ -3065,8 +3078,8 @@ def cloudflare_get_oai_code(
                 log_callback(f"[Debug] Cloudflare 拉取邮件列表失败: {exc}")
             sleep_with_cancel(poll_interval, cancel_callback)
             continue
-        if log_callback:
-            log_callback(f"[Debug] Cloudflare 本轮邮件数量: {len(messages)}")
+        if verbose and log_callback:
+            log_callback(f"[Debug] Cloudflare 本轮邮件数量: {len(messages)}（第 {round_no} 轮）")
 
         for msg in messages:
             msg_id = msg.get("id") or msg.get("msgid")

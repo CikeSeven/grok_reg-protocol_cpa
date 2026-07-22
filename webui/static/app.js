@@ -802,7 +802,7 @@ function appendLogs(lines) {
       frag.append(div);
     }
     panel.append(frag);
-    while (panel.children.length > 2000 && panel.firstChild) {
+    while (panel.children.length > 800 && panel.firstChild) {
       panel.removeChild(panel.firstChild);
     }
     if (!autoscroll || autoscroll.checked) panel.scrollTop = panel.scrollHeight;
