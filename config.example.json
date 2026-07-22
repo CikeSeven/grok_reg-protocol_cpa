@@ -28,6 +28,8 @@
   "hotmail_oauth_network_retries": 2,
   "// hotmail_oauth_retry_delay_sec": "Hotmail/Outlook OAuth2 网络错误重试间隔（秒）。",
   "hotmail_oauth_retry_delay_sec": 1.0,
+  "// hotmail_proxy": "Hotmail/Outlook OAuth/Graph 收码代理策略：direct=直连且不继承环境代理（默认）；config=使用注册代理；env=继承 http_proxy/https_proxy；也可填固定代理 URL。",
+  "hotmail_proxy": "direct",
   "// hotmail_imap_hosts": "Hotmail/Outlook IMAP 主机，按顺序尝试；某些账号在 outlook.office365.com 会报 authenticated but not connected，可回退 imap-mail.outlook.com。",
   "hotmail_imap_hosts": "outlook.office365.com,imap-mail.outlook.com",
   "// hotmail_imap_last_n": "每轮扫描 INBOX 最新 N 封邮件。",

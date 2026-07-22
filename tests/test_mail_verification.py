@@ -169,9 +169,43 @@ class CloudflareMailDirectProxyTests(unittest.TestCase):
 
         self.assertTrue(calls)
         self.assertTrue(all(call[1].get("proxies") == {} for call in calls))
+        self.assertTrue(all(call[1].get("trust_env") is False for call in calls))
 
 
 class HotmailOAuthRefreshRetryTests(unittest.TestCase):
+    def test_refresh_is_direct_by_default_and_ignores_environment_proxy(self):
+        calls = []
+
+        class Response:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"access_token": "access-ok"}
+
+        def fake_post(*args, **kwargs):
+            calls.append((args, kwargs))
+            return Response()
+
+        account = {
+            "email": "main@example.com",
+            "client_id": "client-id",
+            "refresh_token": "refresh-old",
+        }
+
+        with (
+            mock.patch.object(reg, "http_post", side_effect=fake_post),
+            mock.patch.object(reg, "config", {}),
+        ):
+            token = reg._hotmail_refresh_token_with_endpoints(
+                account,
+                [("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {})],
+            )
+
+        self.assertEqual(token, "access-ok")
+        self.assertEqual(calls[0][1].get("proxies"), {})
+        self.assertIs(calls[0][1].get("trust_env"), False)
+
     def test_refresh_retries_transient_tls_errors_before_succeeding(self):
         attempts = []
 
@@ -241,6 +275,49 @@ class HotmailOAuthRefreshRetryTests(unittest.TestCase):
 
         self.assertIn("invalid_grant", str(cm.exception))
         self.assertEqual(len(attempts), 1)
+
+
+class HotmailGraphCodeTests(unittest.TestCase):
+    def test_graph_reader_is_direct_and_matches_openai_mail(self):
+        calls = []
+
+        class Response:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "subject": "Your OpenAI verification code is 123456",
+                            "receivedDateTime": "2099-01-01T00:00:00Z",
+                            "from": {"emailAddress": {"address": "noreply@tm.openai.com"}},
+                            "toRecipients": [{"emailAddress": {"address": "alias@example.com"}}],
+                            "ccRecipients": [],
+                            "body": {"contentType": "text", "content": "Use code 123456 for ChatGPT."},
+                        }
+                    ]
+                }
+
+        def fake_get(*args, **kwargs):
+            calls.append((args, kwargs))
+            return Response()
+
+        with (
+            mock.patch.object(reg, "http_get", side_effect=fake_get),
+            mock.patch.object(reg, "config", {}),
+        ):
+            code = reg.hotmail_graph_get_code(
+                "main@example.com",
+                "alias@example.com",
+                "access-token",
+            )
+
+        self.assertEqual(code, "123456")
+        self.assertTrue(calls)
+        self.assertTrue(all(call[1].get("proxies") == {} for call in calls))
+        self.assertTrue(all(call[1].get("trust_env") is False for call in calls))
 
 
 class RegisterCliMailErrorPolicyTests(unittest.TestCase):

@@ -128,7 +128,12 @@ async def _run_async(
 
     from sentinel_token import SentinelTokenProvider
 
-    kwargs: dict[str, Any] = {"impersonate": impersonate, "timeout": 60}
+    kwargs: dict[str, Any] = {
+        "impersonate": impersonate,
+        "timeout": 60,
+        # WebUI 代理模式显示“直连”时不要被 shell http_proxy/https_proxy 偷偷接管。
+        "trust_env": False,
+    }
     if proxy:
         kwargs["proxies"] = {"http": proxy, "https": proxy}
     session = creq.AsyncSession(**kwargs)

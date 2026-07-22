@@ -68,6 +68,7 @@ DEFAULT_CONFIG = {
     "hotmail_issued_after_grace_seconds": 10,
     "hotmail_oauth_network_retries": 2,
     "hotmail_oauth_retry_delay_sec": 1.0,
+    "hotmail_proxy": "direct",
     "hotmail_imap_hosts": "outlook.office365.com,imap-mail.outlook.com",
     "hotmail_imap_last_n": 30,
     "hotmail_require_recipient_match": True,
@@ -602,7 +603,41 @@ def _mail_direct_proxy_kwargs():
     邮箱管理 API 是我们自己的基础设施，走注册代理反而会把代理 TLS 抖动
     放大成“获取邮箱失败”。
     """
-    return {"proxies": {}}
+    return {"proxies": {}, "trust_env": False}
+
+
+def _hotmail_proxy_kwargs():
+    """Resolve proxy policy for Hotmail/Outlook OAuth + Graph mailbox APIs.
+
+    Default is direct and `trust_env=False`: otherwise curl_cffi will inherit
+    shell `http_proxy`/`https_proxy` even when config.json proxy is empty, which
+    turns local proxy/TLS failures into deterministic "未收到验证码" symptoms.
+
+    Optional config:
+      hotmail_proxy = direct|none|off   -> direct (default)
+      hotmail_proxy = config|proxy      -> use current registration proxy
+      hotmail_proxy = env               -> inherit environment proxy
+      hotmail_proxy = <proxy url>       -> use explicit proxy
+    """
+    raw = str(config.get("hotmail_proxy", "direct") or "direct").strip()
+    mode = raw.lower()
+    if mode in ("", "direct", "none", "no_proxy", "noproxy", "off"):
+        return {"proxies": {}, "trust_env": False}
+    if mode in ("env", "inherit_env"):
+        return {"trust_env": True}
+    if mode in ("config", "proxy", "registration"):
+        proxy = get_effective_proxy()
+    else:
+        proxy = raw
+        try:
+            import proxy_pool
+
+            proxy = proxy_pool.effective_url(proxy_pool.resolve_special(proxy))
+        except Exception:
+            pass
+    if proxy:
+        return {"proxies": {"http": proxy, "https": proxy}, "trust_env": False}
+    return {"proxies": {}, "trust_env": False}
 
 
 def cloudflare_create_temp_address(api_base):
@@ -1173,11 +1208,14 @@ def attach_proxy_auth(page, proxy_raw=None, log_callback=None):
 
 def _build_request_kwargs(**kwargs):
     request_kwargs = dict(kwargs)
+    proxies_provided = "proxies" in request_kwargs
     proxies = request_kwargs.pop("proxies", None)
-    if proxies is None:
+    if proxies is None and not proxies_provided:
         proxies = get_proxies()
-    if proxies:
+    if proxies_provided or proxies:
         request_kwargs["proxies"] = proxies
+        if proxies == {}:
+            request_kwargs.setdefault("trust_env", False)
     request_kwargs.setdefault("timeout", 15)
     return request_kwargs
 
@@ -2310,7 +2348,7 @@ def _hotmail_oauth_post_with_retries(url, data, *, timeout=30, log_callback=None
     last_exc = None
     for attempt in range(1, attempts + 1):
         try:
-            return http_post(url, data=data, timeout=timeout)
+            return http_post(url, data=data, timeout=timeout, **_hotmail_proxy_kwargs())
         except Exception as exc:
             last_exc = exc
             if attempt >= attempts or not _hotmail_is_transient_oauth_error(exc):
@@ -2539,7 +2577,11 @@ def _hotmail_imap_get_code(mailbox_email, target_email, access_token, log_callba
     )
     filter_after_ts = int(_hotmail_effective_filter_after(recent_seconds, issued_after) * 1000)
     target_lower = (target_email or "").strip().lower()
-    keywords = ["x.ai", "xai", "grok", "verification", "code", "confirm", "验证码", "确认"]
+    keywords = [
+        "x.ai", "xai", "grok",
+        "openai", "chatgpt",
+        "verification", "code", "confirm", "验证码", "确认",
+    ]
 
     host = host or "outlook.office365.com"
     if log_callback:
@@ -2637,7 +2679,11 @@ def hotmail_graph_get_code(mailbox_email, target_email, access_token, log_callba
     )
     filter_after_ts = _hotmail_effective_filter_after(recent_seconds, issued_after)
     target_lower = (target_email or "").strip().lower()
-    keywords = ["x.ai", "xai", "grok", "verification", "code", "confirm", "验证码", "确认"]
+    keywords = [
+        "x.ai", "xai", "grok",
+        "openai", "chatgpt",
+        "verification", "code", "confirm", "验证码", "确认",
+    ]
 
     if log_callback:
         log_callback(f"[Debug] Hotmail/Outlook Graph 拉取邮件: user={mailbox_email}")
@@ -2652,7 +2698,12 @@ def hotmail_graph_get_code(mailbox_email, target_email, access_token, log_callba
             f"https://graph.microsoft.com/v1.0/me/mailFolders/{folder}/messages"
             f"?$top={max(1, last_n)}&$orderby=receivedDateTime desc&$select={select}"
         )
-        resp = http_get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=30)
+        resp = http_get(
+            url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=30,
+            **_hotmail_proxy_kwargs(),
+        )
         if resp.status_code in (401, 403):
             raise Exception(f"Graph 鉴权失败 HTTP {resp.status_code}")
         if resp.status_code != 200:

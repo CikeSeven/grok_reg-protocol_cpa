@@ -225,6 +225,7 @@ const CONFIG_FIELDS = {
     ["register_headless", "注册无头", "bool"],
     ["hotmail_accounts_file", "Hotmail 凭证文件", "text"],
     ["hotmail_protocol", "收码协议 auto/imap/graph", "text"],
+    ["hotmail_proxy", "Hotmail 收码代理 direct/config/env/URL", "text"],
     ["hotmail_max_aliases_per_account", "每主邮箱最大别名", "number"],
     ["cloudmail_url", "CloudMail URL", "text"],
     ["cloudmail_admin_email", "CloudMail 管理员邮箱", "text"],
@@ -1557,7 +1558,7 @@ const PAGE_SETTINGS = {
     title: "GPT 注册工作台配置",
     eyebrow: "GPT CONFIG",
     groups: [
-      ["邮箱与收码", ["email_provider", "hotmail_accounts_file", "hotmail_protocol", "mail_timeout", "mail_poll_interval", "mail_retry_count"]],
+      ["邮箱与收码", ["email_provider", "hotmail_accounts_file", "hotmail_protocol", "hotmail_proxy", "mail_timeout", "mail_poll_interval", "mail_retry_count"]],
       ["浏览器与代理", ["register_headless", "register_threads", "thread_start_interval", "proxy", "browser_timezone", "user_agent"]],
       ["Solver 预留", ["turnstile_solver_provider", "protocol_solver_url", "protocol_solver_pass_proxy", "protocol_solver_locale", "protocol_solver_accept_language", "protocol_solver_timezone"]],
       ["Agent 身份", ["gpt_agent_enabled"]],
@@ -1569,7 +1570,7 @@ const PAGE_SETTINGS = {
     eyebrow: "MAIL CONFIG",
     groups: [
       ["服务商", ["email_provider", "defaultDomains", "cloudflare_domain_select", "cloudflare_domain_cooldown_sec", "cloudflare_domain_otp_strikes"]],
-      ["Hotmail / Outlook", ["hotmail_accounts_file", "hotmail_protocol", "hotmail_max_aliases_per_account", "hotmail_alias_mode", "hotmail_alias_random_length", "hotmail_poll_interval", "hotmail_recent_seconds"]],
+      ["Hotmail / Outlook", ["hotmail_accounts_file", "hotmail_protocol", "hotmail_proxy", "hotmail_max_aliases_per_account", "hotmail_alias_mode", "hotmail_alias_random_length", "hotmail_poll_interval", "hotmail_recent_seconds"]],
       ["CloudMail", ["cloudmail_url", "cloudmail_admin_email", "cloudmail_password"]],
       ["其他服务商", ["cloudflare_api_base", "cloudflare_api_key", "cloudflare_admin_password", "cloudflare_auth_mode", "duckmail_api_key", "mailnest_api_key", "mailnest_project_code", "yyds_api_key", "yyds_jwt"]],
     ],

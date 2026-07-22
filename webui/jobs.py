@@ -751,12 +751,17 @@ class JobRunner:
                         idx = next_idx[0]
                     proxy = pick_proxy() if pick_proxy else None
                     try:
+                        if proxy:
+                            reg.set_thread_proxy(proxy)
+                        else:
+                            reg.clear_thread_proxy()
                         email, dev_token = reg.get_email_and_token()
                     except Exception as exc:
                         log(f"! 获取邮箱失败: {exc}")
                         bump("fail")
                         bump("reg_fail")
                         bump("done")
+                        reg.clear_thread_proxy()
                         continue
                     log(f"=== [{idx}/{target}] {email} ===")
                     stage_map = {
@@ -813,6 +818,8 @@ class JobRunner:
                             reg.mark_error(email, reason=str(exc)[:120])
                         except Exception:
                             pass
+                    finally:
+                        reg.clear_thread_proxy()
 
             threads_list = [
                 threading.Thread(target=worker, args=(i,), daemon=True, name=f"gpt-w{i}")
