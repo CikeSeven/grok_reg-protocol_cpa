@@ -878,6 +878,7 @@ PUBLIC_CONFIG_KEYS = [
     "cloudmail_admin_email",
     "cloudmail_password",
     "cloudflare_api_base",
+    "cloudflare_domain_select",
     "cloudflare_api_key",
     "cloudflare_admin_password",
     "cloudflare_auth_mode",

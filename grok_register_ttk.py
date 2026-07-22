@@ -624,8 +624,7 @@ def cloudflare_create_temp_address(api_base):
     payload = {"enablePrefix": True, "name": random_name()}
     domains = [x.strip() for x in re.split(r"[,，\s]+", str(config.get("defaultDomains", "") or "")) if x.strip()]
     if domains:
-        payload["domain"] = domains[_cf_domain_index % len(domains)]
-        _cf_domain_index += 1
+        payload["domain"] = _pick_cf_domain(domains)
 
     resp = http_post(
         url,
@@ -1340,6 +1339,17 @@ def cloudflare_get_token(api_base, address, password, api_key=None):
         if isinstance(data.get("data"), dict) and data["data"].get("token"):
             return data["data"].get("token")
     return None
+
+
+def _pick_cf_domain(domains):
+    """域名池抽取：cloudflare_domain_select = random（随机）| round_robin（轮换，默认）。"""
+    mode = str(config.get("cloudflare_domain_select", "round_robin") or "round_robin").strip().lower()
+    if mode == "random":
+        return random.choice(domains)
+    global _cf_domain_index
+    domain = domains[_cf_domain_index % len(domains)]
+    _cf_domain_index += 1
+    return domain
 
 
 def cloudflare_get_messages(api_base, token):
@@ -2694,9 +2704,7 @@ def get_email_and_token(api_key=None):
         domains = [x.strip() for x in re.split(r"[,，\s]+", raw) if x.strip()]
         if not domains:
             raise Exception("CloudMail 需要在 defaultDomains 中配置可用域名")
-        global _cf_domain_index
-        domain = domains[_cf_domain_index % len(domains)]
-        _cf_domain_index += 1
+        domain = _pick_cf_domain(domains)
         username = generate_username(10)
         address = f"{username}@{domain}"
         # 返回占位 token（实际不用于邮件查询，邮件查询走公开 API）
