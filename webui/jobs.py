@@ -317,6 +317,85 @@ class JobRunner:
         t.start()
         return job.public_dict()
 
+    def start_gpt_register(self, options: dict[str, Any]) -> dict[str, Any]:
+        """Start a GPT registration task (real executor).
+
+        协议优先：csrf → signin → authorize → 邮箱 OTP → validate，
+        然后浏览器接力 about-you（sentinel SDK）→ create_account → callback。
+        """
+        extra = max(0, int(options.get("extra") or 0))
+        count = max(0, int(options.get("count") or 0))
+        if extra <= 0 and count <= 0:
+            raise ValueError("请指定 extra 或 count")
+        threads = max(1, min(int(options.get("threads") or 1), MAX_REGISTER_THREADS))
+        otp_timeout = max(10, min(int(options.get("otp_timeout") or 300), 3600))
+        headless = bool(options.get("headless", False))
+        fast = bool(options.get("fast", True))
+        auto_continue = bool(options.get("auto_continue", True))
+        probe = bool(options.get("probe", True))
+        auth_entry = str(options.get("auth_entry") or "chatgpt-nextauth").strip()
+        if auth_entry not in {"chatgpt-nextauth", "auth-direct"}:
+            raise ValueError("auth_entry 必须是 chatgpt-nextauth/auth-direct")
+        proxy_mode = str(options.get("proxy_mode") or "config").strip().lower()
+        if proxy_mode not in ("config", "fixed", "random"):
+            raise ValueError("proxy_mode 必须是 config/fixed/random")
+        proxy_fixed = str(options.get("proxy_fixed") or "").strip()
+        if proxy_mode == "fixed":
+            import proxy_pool
+
+            if not proxy_pool.normalize_proxy_url(proxy_fixed):
+                raise ValueError("固定代理格式无效")
+        elif proxy_mode == "random":
+            import proxy_pool
+
+            if not proxy_pool.load_pool():
+                raise ValueError("代理池为空，请先在代理池页面导入代理")
+
+        target = extra or count
+        job = self._register_job(
+            "gpt_register",
+            {
+                "extra": extra,
+                "count": count,
+                "threads": threads,
+                "otp_timeout": otp_timeout,
+                "headless": headless,
+                "fast": fast,
+                "auto_continue": auto_continue,
+                "probe": probe,
+                "auth_entry": auth_entry,
+                "proxy_mode": proxy_mode,
+                "proxy_fixed": proxy_fixed,
+                "source": str(options.get("source") or "gpt_workbench").strip(),
+                "plan_only": False,
+            },
+        )
+        job.stats = {
+            "target": target,
+            "total": target,
+            "done": 0,
+            "ok": 0,
+            "fail": 0,
+            "stage_index": 0,
+            "steps": 8,
+            "prepared": 0,
+            "otp_ready": 0,
+            "sentinel_ready": 0,
+            "session_ready": 0,
+            "probed": 0,
+            "reg_success": 0,
+            "reg_fail": 0,
+        }
+        t = threading.Thread(
+            target=self._run_gpt_register,
+            args=(job,),
+            daemon=True,
+            name=f"job-gpt-reg-{job.id}",
+        )
+        job.thread = t
+        t.start()
+        return job.public_dict()
+
     def _finish(self, job: Job, status: str, error: str = "") -> None:
         job.status = status
         job.error = error
@@ -611,6 +690,153 @@ class JobRunner:
             cli.log = original_log  # type: ignore[assignment]
             cli.register_one = orig_register_one  # type: ignore[assignment]
             cli._run_mint_job = orig_run_mint_job  # type: ignore[assignment]
+
+    def _run_gpt_register(self, job: Job) -> None:
+        import gpt_register_flow as gpt
+        import grok_register_ttk as reg
+
+        job.status = "running"
+        job.started_at = _utc_now()
+        job.append_log("GPT 注册任务启动（协议优先 + 浏览器 sentinel 接力）")
+        cancel = job.cancel_event.is_set
+        try:
+            reg.load_config()
+            cfg = dict(getattr(reg, "config", {}) or {})
+            cfg.update(store.load_config_raw())
+            reg.config = cfg
+
+            # 代理模式
+            proxy_mode = str(job.options.get("proxy_mode") or "config")
+            if proxy_mode == "fixed":
+                import proxy_pool as pp
+
+                fixed_url = pp.effective_url(job.options.get("proxy_fixed"))
+                job.append_log(f"代理模式: 固定 {pp.mask_proxy(fixed_url)}")
+                pick_proxy = lambda: fixed_url  # noqa: E731
+            elif proxy_mode == "random":
+                import proxy_pool as pp
+
+                pool = pp.load_pool()
+                job.append_log(f"代理模式: 随机轮换（池 {len(pool)} 个，每账号轮换）")
+                pick = _rotating_proxy_picker(pool)
+                pick_proxy = lambda: pp.effective_url(pick())  # noqa: E731
+            else:
+                import proxy_pool as pp
+
+                cfg_proxy = pp.resolve_special((cfg.get("proxy") or "").strip())
+                job.append_log(
+                    f"代理模式: 跟随配置 {pp.mask_proxy(cfg_proxy)}" if cfg_proxy else "代理模式: 直连"
+                )
+                pick_proxy = lambda: cfg_proxy or None  # noqa: E731
+
+            target = max(1, int(job.options.get("extra") or job.options.get("count") or 1))
+            threads = max(1, int(job.options.get("threads") or 1))
+            headless = bool(job.options.get("headless", True))
+            otp_timeout = float(job.options.get("otp_timeout") or 300)
+            idx_lock = threading.Lock()
+            next_idx = [0]
+
+            def bump(key: str, n: int = 1) -> None:
+                job.stats[key] = int(job.stats.get(key, 0)) + n
+
+            def worker(wid: int) -> None:
+                log = lambda m: job.append_log(f"[W{wid}] {m}")  # noqa: E731
+                while True:
+                    if cancel():
+                        break
+                    with idx_lock:
+                        if next_idx[0] >= target:
+                            break
+                        next_idx[0] += 1
+                        idx = next_idx[0]
+                    proxy = pick_proxy() if pick_proxy else None
+                    try:
+                        email, dev_token = reg.get_email_and_token()
+                    except Exception as exc:
+                        log(f"! 获取邮箱失败: {exc}")
+                        bump("fail")
+                        bump("reg_fail")
+                        bump("done")
+                        continue
+                    log(f"=== [{idx}/{target}] {email} ===")
+                    stage_map = {
+                        "prepared": "prepared",
+                        "otp_ready": "otp_ready",
+                        "sentinel_ready": "sentinel_ready",
+                        "session_ready": "session_ready",
+                        "probed": "probed",
+                    }
+                    stage_order = ["prepared", "otp_ready", "sentinel_ready", "session_ready", "probed"]
+
+                    def on_stage(stage: str) -> None:
+                        if stage in stage_map:
+                            bump(stage_map[stage])
+                            job.stats["stage_index"] = min(
+                                8, 3 + stage_order.index(stage) if stage in stage_order else job.stats["stage_index"]
+                            )
+
+                    try:
+                        result = gpt.run_gpt_register(
+                            email=email,
+                            dev_token=dev_token,
+                            proxy=proxy,
+                            headless=headless,
+                            otp_timeout=otp_timeout,
+                            probe=bool(job.options.get("probe", True)),
+                            log=log,
+                            cancel=cancel,
+                            on_stage=on_stage,
+                        )
+                        if result.get("ok"):
+                            bump("ok")
+                            bump("reg_success")
+                            bump("done")
+                            try:
+                                reg.mark_used(email, "")
+                            except Exception:
+                                pass
+                        else:
+                            bump("fail")
+                            bump("reg_fail")
+                            bump("done")
+                            try:
+                                reg.mark_error(email, reason=str(result.get("error", ""))[:120])
+                            except Exception:
+                                pass
+                    except Exception as exc:
+                        bump("fail")
+                        bump("reg_fail")
+                        bump("done")
+                        log(f"! 注册失败: {exc}")
+                        try:
+                            reg.mark_error(email, reason=str(exc)[:120])
+                        except Exception:
+                            pass
+
+            threads_list = [
+                threading.Thread(target=worker, args=(i,), daemon=True, name=f"gpt-w{i}")
+                for i in range(1, threads + 1)
+            ]
+            for t in threads_list:
+                t.start()
+            for t in threads_list:
+                while t.is_alive():
+                    t.join(timeout=0.5)
+                    if cancel():
+                        break
+
+            if cancel():
+                self._finish(job, "stopped")
+                job.append_log("GPT 注册任务已停止")
+            else:
+                self._finish(job, "completed")
+                job.append_log(
+                    f"完成: 成功 {job.stats.get('reg_success', 0)} 失败 {job.stats.get('reg_fail', 0)}"
+                )
+        except Exception as exc:
+            job.append_log(f"GPT 注册任务异常: {exc}")
+            traceback.print_exc()
+            self._finish(job, "failed", str(exc))
 
     def _run_backfill(self, job: Job) -> None:
         from cpa_xai import existing_cpa_emails, mint_and_export, parse_accounts_file

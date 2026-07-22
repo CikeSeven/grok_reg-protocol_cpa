@@ -2814,6 +2814,8 @@ def extract_verification_code(text, subject=""):
         rf"(?:verification|confirm(?:ation)?|security|login)?\s*code\s*[:：#-]?\s*{hyphen_code}",
         rf"confirm(?:ation)?\s+code\s*[:：#-]?\s*{hyphen_code}",
         rf"verification\s+code\s*[:：#-]?\s*{numeric_code}",
+        rf"verification\s+code\s+is\s+{numeric_code}",
+        rf"(?:temporary\s+\w+\s+verification\s+)?code\s+is\s+{numeric_code}",
         rf"your\s+code\s*[:：#-]?\s*{numeric_code}",
         rf"confirm(?:ation)?\s+code\s*[:：#-]?\s*{numeric_code}",
     ]
@@ -2822,6 +2824,12 @@ def extract_verification_code(text, subject=""):
         code = _clean(match.group(1) if match else None)
         if code:
             return code
+
+    # 2.5) ChatGPT/OpenAI 兜底：邮件已被关键词筛选过，纯 6 位数字即验证码
+    match = re.search(r"\b(\d{6})\b", text)
+    code = _clean(match.group(1) if match else None)
+    if code:
+        return code
 
     # 3) Last-resort generic body match, but keep the lowercase-fragment guard.
     for match in re.finditer(r"\b([A-Z0-9]{3}-[A-Z0-9]{3})\b", text):
