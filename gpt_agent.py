@@ -16,6 +16,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from curl_cffi import requests as creq
+
 AGENT_VERSION = "0.138.0-alpha.6"
 AGENT_HARNESS_ID = "codex-cli"
 AGENT_REGISTER_URL = "https://auth.openai.com/api/accounts/v1/agent/register"
