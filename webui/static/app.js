@@ -1492,7 +1492,7 @@ const EXTRA_FIELDS = [
   ["hotmail_recent_seconds", "Hotmail 邮件时间窗秒", "number"],
   ["cloudflare_api_key", "Cloudflare API Key", "password"],
   ["cloudflare_auth_mode", "Cloudflare 认证方式", "text"],
-  ["cloudflare_domain_select", "域名池抽取 random/round_robin", "text"],
+  ["cloudflare_domain_select", "域名池抽取 shuffle/random/round_robin", "text"],
   ["cloudflare_domain_cooldown_sec", "域名冷却秒（被拒后）", "number"],
   ["cloudflare_domain_otp_strikes", "连续收码超时冷却阈值（次）", "number"],
   ["yyds_api_key", "YYDS API Key", "password"],

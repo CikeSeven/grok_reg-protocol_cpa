@@ -1344,6 +1344,7 @@ def cloudflare_get_token(api_base, address, password, api_key=None):
 _cf_domain_index = 0
 _cf_domain_cooldowns: dict = {}
 _cf_domain_cooldown_lock = threading.Lock()
+_cf_domain_deck: list = []
 
 CF_DOMAIN_COOLDOWN_DEFAULT_SEC = 600
 
@@ -1442,6 +1443,14 @@ def _pick_cf_domain(domains, log_callback=None, cancel_callback=None):
     mode = str(config.get("cloudflare_domain_select", "round_robin") or "round_robin").strip().lower()
     if mode == "random":
         return random.choice(available)
+    if mode == "shuffle":
+        # 洗牌轮换：每个域名各用一遍后才重新洗牌，避免真随机重复
+        global _cf_domain_deck
+        with _cf_domain_cooldown_lock:
+            if not _cf_domain_deck:
+                _cf_domain_deck = available[:]
+                random.shuffle(_cf_domain_deck)
+            return _cf_domain_deck.pop(0)
     global _cf_domain_index
     domain = available[_cf_domain_index % len(available)]
     _cf_domain_index += 1
