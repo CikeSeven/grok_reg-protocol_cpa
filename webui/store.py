@@ -875,6 +875,7 @@ PUBLIC_CONFIG_KEYS = [
     "hotmail_alias_mode",
     "hotmail_alias_random_length",
     "hotmail_max_aliases_per_account",
+    "hotmail_max_active_aliases_per_account",
     "hotmail_poll_interval",
     "hotmail_recent_seconds",
     "cloudmail_url",
@@ -1053,6 +1054,7 @@ PUBLIC_CONFIG_DEFAULTS = {
     "turnstile_solver_provider": "local",
     "browser_timezone": "",
     "hotmail_proxy": "direct",
+    "hotmail_max_active_aliases_per_account": 1,
     "cpa_pool_auto_scan": False,
     "cpa_pool_scan_interval_sec": 300,
     "cpa_pool_scan_workers": 16,
@@ -1148,6 +1150,8 @@ def public_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
         if key not in effective_cfg:
             continue
         value = effective_cfg[key]
+        if key == "hotmail_proxy" and not value:
+            value = PUBLIC_CONFIG_DEFAULTS["hotmail_proxy"]
         if key in SECRET_CONFIG_KEYS and value:
             out[key] = ""
             out[f"{key}__set"] = True

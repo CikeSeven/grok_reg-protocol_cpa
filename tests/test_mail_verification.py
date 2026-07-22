@@ -320,6 +320,42 @@ class HotmailGraphCodeTests(unittest.TestCase):
         self.assertTrue(all(call[1].get("trust_env") is False for call in calls))
 
 
+
+class HotmailAliasConcurrencyTests(unittest.TestCase):
+    def test_hotmail_picker_limits_inflight_aliases_per_main_mailbox(self):
+        accounts = [
+            {"email": "main1@example.com", "password": "p", "client_id": "c", "refresh_token": "r"},
+            {"email": "main2@example.com", "password": "p", "client_id": "c", "refresh_token": "r"},
+        ]
+        old_reserved = set(reg._hotmail_reserved_aliases)
+        old_tokens = dict(reg._hotmail_token_map)
+        try:
+            reg._hotmail_reserved_aliases.clear()
+            reg._hotmail_token_map.clear()
+            with (
+                mock.patch.object(reg, "_hotmail_load_accounts", return_value=accounts),
+                mock.patch.object(reg, "is_email_used", return_value=False),
+                mock.patch.object(
+                    reg,
+                    "config",
+                    {
+                        "hotmail_max_aliases_per_account": 5,
+                        "hotmail_max_active_aliases_per_account": 1,
+                        "hotmail_alias_mode": "sequence",
+                    },
+                ),
+            ):
+                first, _ = reg.hotmail_get_email_and_token()
+                second, _ = reg.hotmail_get_email_and_token()
+
+            self.assertEqual(first, "main1@example.com")
+            self.assertEqual(second, "main2@example.com")
+        finally:
+            reg._hotmail_reserved_aliases.clear()
+            reg._hotmail_reserved_aliases.update(old_reserved)
+            reg._hotmail_token_map.clear()
+            reg._hotmail_token_map.update(old_tokens)
+
 class RegisterCliMailErrorPolicyTests(unittest.TestCase):
     def test_browser_retry_releases_alias_without_persisting_error_on_otp_timeout(self):
         import register_cli

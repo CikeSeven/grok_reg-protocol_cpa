@@ -200,6 +200,13 @@ const POLICY_ACTION_OPTIONS = [
   ["delete", "delete — 移入 deleted 隔离区"],
 ];
 
+const HOTMAIL_PROXY_OPTIONS = [
+  ["direct", "direct — 直连收码，不继承服务器环境代理（推荐）"],
+  ["config", "config — 跟随当前注册代理"],
+  ["env", "env — 继承服务器 http_proxy/https_proxy"],
+  ["pool:random", "pool:random — 从代理池随机取"],
+];
+
 const GPT_FLOW_FALLBACK = {
   source: "注册GPT.har",
   entry_count: 638,
@@ -225,8 +232,9 @@ const CONFIG_FIELDS = {
     ["register_headless", "注册无头", "bool"],
     ["hotmail_accounts_file", "Hotmail 凭证文件", "text"],
     ["hotmail_protocol", "收码协议 auto/imap/graph", "text"],
-    ["hotmail_proxy", "Hotmail 收码代理 direct/config/env/URL", "text"],
+    ["hotmail_proxy", "Hotmail 收码代理", "hotmail_proxy"],
     ["hotmail_max_aliases_per_account", "每主邮箱最大别名", "number"],
+    ["hotmail_max_active_aliases_per_account", "每主邮箱并发别名", "number"],
     ["cloudmail_url", "CloudMail URL", "text"],
     ["cloudmail_admin_email", "CloudMail 管理员邮箱", "text"],
     ["cloudmail_password", "CloudMail 密码", "password"],
@@ -1469,6 +1477,27 @@ function fieldInput(key, label, type, value, isSet) {
       : "";
     return `<label><span>${esc(label)}</span><select class="select wide policy-action-select" data-config-key="${esc(key)}">${fallback}${options}</select></label>`;
   }
+  if (type === "hotmail_proxy") {
+    const current = String(value ?? "direct") || "direct";
+    const poolOptions = state.proxies.map((p) =>
+      `<option value="${esc(p.raw)}" ${p.raw === current ? "selected" : ""}>${esc(p.masked)}</option>`,
+    ).join("");
+    const known = new Set([...HOTMAIL_PROXY_OPTIONS.map(([v]) => v), ...state.proxies.map((p) => p.raw)]);
+    const isCustom = current && !known.has(current);
+    const options = HOTMAIL_PROXY_OPTIONS.map(([v, text]) =>
+      `<option value="${esc(v)}" ${v === current ? "selected" : ""}>${esc(text)}</option>`,
+    ).join("");
+    return `<label><span>${esc(label)}</span>
+      <select class="select wide" data-config-key="${esc(key)}" data-hotmail-proxy-field="1">
+        ${options}
+        ${poolOptions}
+        <option value="__custom__" ${isCustom ? "selected" : ""}>自定义固定代理…</option>
+      </select>
+      <input data-hotmail-proxy-custom="${esc(key)}" type="text" value="${isCustom ? esc(current) : ""}"
+        placeholder="host:port[:user:pass] 或 http://user:pass@host:port"
+        style="margin-top:7px" ${isCustom ? "" : "hidden"}>
+    </label>`;
+  }
   if (type === "proxy") {
     const current = String(value ?? "");
     const poolOptions = state.proxies.map((p) =>
@@ -1558,7 +1587,7 @@ const PAGE_SETTINGS = {
     title: "GPT 注册工作台配置",
     eyebrow: "GPT CONFIG",
     groups: [
-      ["邮箱与收码", ["email_provider", "hotmail_accounts_file", "hotmail_protocol", "hotmail_proxy", "mail_timeout", "mail_poll_interval", "mail_retry_count"]],
+      ["邮箱与收码", ["email_provider", "hotmail_accounts_file", "hotmail_protocol", "hotmail_proxy", "hotmail_max_active_aliases_per_account", "mail_timeout", "mail_poll_interval", "mail_retry_count"]],
       ["浏览器与代理", ["register_headless", "register_threads", "thread_start_interval", "proxy", "browser_timezone", "user_agent"]],
       ["Solver 预留", ["turnstile_solver_provider", "protocol_solver_url", "protocol_solver_pass_proxy", "protocol_solver_locale", "protocol_solver_accept_language", "protocol_solver_timezone"]],
       ["Agent 身份", ["gpt_agent_enabled"]],
@@ -1570,7 +1599,7 @@ const PAGE_SETTINGS = {
     eyebrow: "MAIL CONFIG",
     groups: [
       ["服务商", ["email_provider", "defaultDomains", "cloudflare_domain_select", "cloudflare_domain_cooldown_sec", "cloudflare_domain_otp_strikes"]],
-      ["Hotmail / Outlook", ["hotmail_accounts_file", "hotmail_protocol", "hotmail_proxy", "hotmail_max_aliases_per_account", "hotmail_alias_mode", "hotmail_alias_random_length", "hotmail_poll_interval", "hotmail_recent_seconds"]],
+      ["Hotmail / Outlook", ["hotmail_accounts_file", "hotmail_protocol", "hotmail_proxy", "hotmail_max_active_aliases_per_account", "hotmail_max_aliases_per_account", "hotmail_alias_mode", "hotmail_alias_random_length", "hotmail_poll_interval", "hotmail_recent_seconds"]],
       ["CloudMail", ["cloudmail_url", "cloudmail_admin_email", "cloudmail_password"]],
       ["其他服务商", ["cloudflare_api_base", "cloudflare_api_key", "cloudflare_admin_password", "cloudflare_auth_mode", "duckmail_api_key", "mailnest_api_key", "mailnest_project_code", "yyds_api_key", "yyds_jwt"]],
     ],
@@ -1657,6 +1686,13 @@ function collectConfigScoped(root) {
       } else {
         payload[key] = input.value;
       }
+    } else if (input.dataset.hotmailProxyField) {
+      if (input.value === "__custom__") {
+        const custom = root.querySelector(`[data-hotmail-proxy-custom="${key}"]`);
+        payload[key] = (custom ? custom.value : "").trim();
+      } else {
+        payload[key] = input.value || "direct";
+      }
     } else if (input.type === "checkbox") {
       payload[key] = input.checked;
     } else if (input.type === "number") {
@@ -1725,6 +1761,13 @@ function collectConfigFromForm() {
         payload[key] = (custom ? custom.value : "").trim();
       } else {
         payload[key] = input.value;
+      }
+    } else if (input.dataset.hotmailProxyField) {
+      if (input.value === "__custom__") {
+        const custom = document.querySelector(`[data-hotmail-proxy-custom="${key}"]`);
+        payload[key] = (custom ? custom.value : "").trim();
+      } else {
+        payload[key] = input.value || "direct";
       }
     } else if (input.type === "checkbox") {
       payload[key] = input.checked;
@@ -2661,9 +2704,16 @@ function bindEvents() {
   // 配置中心代理选择器：选「自定义…」时展开文本框
   document.addEventListener("change", (e) => {
     const sel = e.target.closest("select[data-proxy-field]");
-    if (!sel) return;
-    const custom = document.querySelector(`[data-proxy-custom="${sel.dataset.configKey}"]`);
-    if (custom) custom.hidden = sel.value !== "__custom__";
+    if (sel) {
+      const custom = document.querySelector(`[data-proxy-custom="${sel.dataset.configKey}"]`);
+      if (custom) custom.hidden = sel.value !== "__custom__";
+      return;
+    }
+    const hotmailSel = e.target.closest("select[data-hotmail-proxy-field]");
+    if (hotmailSel) {
+      const custom = document.querySelector(`[data-hotmail-proxy-custom="${hotmailSel.dataset.configKey}"]`);
+      if (custom) custom.hidden = hotmailSel.value !== "__custom__";
+    }
   });
 
   /* console */

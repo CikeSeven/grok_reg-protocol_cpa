@@ -96,6 +96,53 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
+def _gpt_is_cancel_error(reason: str) -> bool:
+    text = str(reason or "").lower()
+    return "用户停止" in text or "任务已取消" in text or "[cancel]" in text or "cancel" in text
+
+
+def _gpt_should_retry_error(reg_module: Any, reason: str) -> bool:
+    """Return True for GPT registration errors worth retrying with a fresh mailbox/session."""
+    if _gpt_is_cancel_error(reason):
+        return False
+    text = str(reason or "").lower()
+    if not text:
+        return True
+    try:
+        if bool(reg_module.should_persist_email_error(reason)):
+            return False
+    except Exception:
+        pass
+    hard_markers = (
+        "graph 鉴权失败",
+        "http 401",
+        "http 403",
+        "invalid_grant",
+        "refresh token",
+        "dev_token 无效",
+        "账号文件",
+        "凭证",
+        "credential",
+        "可用别名已耗尽",
+    )
+    if any(marker in text for marker in hard_markers):
+        return False
+    return True
+
+
+def _mark_gpt_email_failure(reg_module: Any, email: str, reason: str) -> None:
+    """Persist only hard mailbox failures; transient GPT flow failures release the alias."""
+    if not email:
+        return
+    try:
+        if bool(reg_module.should_persist_email_error(reason)):
+            reg_module.mark_error(email, reason=str(reason)[:120])
+        else:
+            reg_module.release_email(email)
+    except Exception:
+        pass
+
+
 def resolve_backfill_workers(options: dict[str, Any], config: dict[str, Any]) -> int:
     """Resolve CPA backfill concurrency.
 
@@ -733,6 +780,8 @@ class JobRunner:
             threads = max(1, int(job.options.get("threads") or 1))
             headless = bool(job.options.get("headless", True))
             otp_timeout = float(job.options.get("otp_timeout") or 300)
+            max_mail_retry = max(1, int(cfg.get("mail_retry_count", 3) or 3))
+            job.append_log(f"GPT 失败重试: 每个目标最多换邮箱/新会话 {max_mail_retry} 次")
             idx_lock = threading.Lock()
             next_idx = [0]
 
@@ -749,21 +798,6 @@ class JobRunner:
                             break
                         next_idx[0] += 1
                         idx = next_idx[0]
-                    proxy = pick_proxy() if pick_proxy else None
-                    try:
-                        if proxy:
-                            reg.set_thread_proxy(proxy)
-                        else:
-                            reg.clear_thread_proxy()
-                        email, dev_token = reg.get_email_and_token()
-                    except Exception as exc:
-                        log(f"! 获取邮箱失败: {exc}")
-                        bump("fail")
-                        bump("reg_fail")
-                        bump("done")
-                        reg.clear_thread_proxy()
-                        continue
-                    log(f"=== [{idx}/{target}] {email} ===")
                     stage_map = {
                         "prepared": "prepared",
                         "otp_ready": "otp_ready",
@@ -780,46 +814,78 @@ class JobRunner:
                                 8, 3 + stage_order.index(stage) if stage in stage_order else job.stats["stage_index"]
                             )
 
-                    try:
-                        result = gpt.run_gpt_register(
-                            email=email,
-                            dev_token=dev_token,
-                            proxy=proxy,
-                            headless=headless,
-                            otp_timeout=otp_timeout,
-                            probe=bool(job.options.get("probe", True)),
-                            config=cfg,
-                            log=log,
-                            cancel=cancel,
-                            on_stage=on_stage,
-                        )
-                        if result.get("ok"):
-                            bump("ok")
-                            bump("reg_success")
-                            bump("done")
-                            try:
-                                reg.mark_used(email, "")
-                            except Exception:
-                                pass
-                        else:
-                            bump("fail")
-                            bump("reg_fail")
-                            bump("done")
-                            try:
-                                reg.mark_error(email, reason=str(result.get("error", ""))[:120])
-                            except Exception:
-                                pass
-                    except Exception as exc:
+                    success = False
+                    last_error = ""
+                    for mail_try in range(1, max_mail_retry + 1):
+                        if cancel():
+                            break
+                        proxy = pick_proxy() if pick_proxy else None
+                        email = ""
+                        dev_token = ""
+                        try:
+                            if proxy:
+                                reg.set_thread_proxy(proxy)
+                            else:
+                                reg.clear_thread_proxy()
+                            email, dev_token = reg.get_email_and_token()
+                        except Exception as exc:
+                            last_error = str(exc)
+                            log(f"! 获取邮箱失败（尝试 {mail_try}/{max_mail_retry}）: {exc}")
+                            reg.clear_thread_proxy()
+                            if mail_try < max_mail_retry and _gpt_should_retry_error(reg, last_error):
+                                time.sleep(1.0)
+                                continue
+                            break
+                        log(f"=== [{idx}/{target}] 尝试 {mail_try}/{max_mail_retry} {email} ===")
+                        try:
+                            result = gpt.run_gpt_register(
+                                email=email,
+                                dev_token=dev_token,
+                                proxy=proxy,
+                                headless=headless,
+                                otp_timeout=otp_timeout,
+                                probe=bool(job.options.get("probe", True)),
+                                config=cfg,
+                                log=log,
+                                cancel=cancel,
+                                on_stage=on_stage,
+                            )
+                            if result.get("ok"):
+                                bump("ok")
+                                bump("reg_success")
+                                success = True
+                                try:
+                                    reg.mark_used(email, "")
+                                except Exception:
+                                    pass
+                                break
+                            last_error = str(result.get("error", "") or "GPT 注册未成功")
+                            _mark_gpt_email_failure(reg, email, last_error)
+                        except Exception as exc:
+                            last_error = str(exc)
+                            _mark_gpt_email_failure(reg, email, last_error)
+                        finally:
+                            reg.clear_thread_proxy()
+
+                        if cancel():
+                            break
+                        if mail_try < max_mail_retry and _gpt_should_retry_error(reg, last_error):
+                            log(f"[retry] 本次 GPT 注册失败，自动换邮箱/会话重试 {mail_try}/{max_mail_retry}: {last_error}")
+                            time.sleep(1.0)
+                            continue
+                        break
+
+                    if success:
+                        bump("done")
+                        continue
+                    if cancel():
+                        reg.clear_thread_proxy()
+                        break
+                    else:
                         bump("fail")
                         bump("reg_fail")
                         bump("done")
-                        log(f"! 注册失败: {exc}")
-                        try:
-                            reg.mark_error(email, reason=str(exc)[:120])
-                        except Exception:
-                            pass
-                    finally:
-                        reg.clear_thread_proxy()
+                        log(f"! 注册失败（已尝试 {max_mail_retry} 次）: {last_error or 'unknown'}")
 
             threads_list = [
                 threading.Thread(target=worker, args=(i,), daemon=True, name=f"gpt-w{i}")

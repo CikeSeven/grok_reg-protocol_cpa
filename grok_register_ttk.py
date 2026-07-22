@@ -63,6 +63,7 @@ DEFAULT_CONFIG = {
     "hotmail_alias_random_length": 8,
     "hotmail_alias_random_max_attempts": 200,
     "hotmail_max_aliases_per_account": 5,
+    "hotmail_max_active_aliases_per_account": 1,
     "hotmail_poll_interval": 5,
     "hotmail_recent_seconds": 900,
     "hotmail_issued_after_grace_seconds": 10,
@@ -2171,6 +2172,15 @@ def _hotmail_count_consumed_for_main(main_email):
     return len(consumed)
 
 
+def _hotmail_count_reserved_for_main(main_email):
+    """Count currently in-flight aliases for one Hotmail main mailbox."""
+    consumed = set()
+    for email_addr in _hotmail_reserved_aliases:
+        if _hotmail_is_alias_of_main(email_addr, main_email):
+            consumed.add(email_addr.strip().lower())
+    return len(consumed)
+
+
 def _hotmail_alias_available(alias_email):
     alias_key = alias_email.strip().lower()
     return alias_key and alias_key not in _hotmail_reserved_aliases and not is_email_used(alias_email)
@@ -2207,6 +2217,11 @@ def hotmail_get_email_and_token():
     except Exception:
         max_aliases = 5
     max_aliases = max(1, max_aliases)
+    try:
+        max_active_aliases = int(config.get("hotmail_max_active_aliases_per_account", 1) or 1)
+    except Exception:
+        max_active_aliases = 1
+    max_active_aliases = max(1, min(max_active_aliases, max_aliases))
     alias_mode = str(config.get("hotmail_alias_mode", "random") or "random").strip().lower()
     random_mode = alias_mode in ("random", "rand", "随机")
     try:
@@ -2221,6 +2236,8 @@ def hotmail_get_email_and_token():
             if "@" not in main_email:
                 continue
             if _hotmail_count_consumed_for_main(main_email) >= max_aliases:
+                continue
+            if _hotmail_count_reserved_for_main(main_email) >= max_active_aliases:
                 continue
 
             candidate = None
