@@ -193,7 +193,7 @@ async def _run_async(
             hops += 1
             final_resp = await session.get(loc, allow_redirects=False)
             loc = final_resp.headers.get("location", "")
-        final_url = str(final_resp.url) if final_resp is not None else ""
+        final_url = str(getattr(final_resp, "url", "") or "") if final_resp is not None else ""
         if "create-account/password" in final_url:
             # OpenAI 新注册分支（灰度）：先弹「创建密码」页，此分支不发 OTP。
             # 该页自带「Sign up with one-time code」入口

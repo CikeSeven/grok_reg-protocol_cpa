@@ -864,7 +864,10 @@ class JobRunner:
                                 reg.set_thread_proxy(proxy)
                             else:
                                 reg.clear_thread_proxy()
-                            email, dev_token = reg.get_email_and_token(provider=gpt_email_provider)
+                            if gpt_email_provider:
+                                email, dev_token = reg.get_email_and_token(provider=gpt_email_provider)
+                            else:
+                                email, dev_token = reg.get_email_and_token()
                         except Exception as exc:
                             last_error = str(exc)
                             log(f"! 获取邮箱失败（尝试 {mail_try}/{max_mail_retry}）: {exc}")
