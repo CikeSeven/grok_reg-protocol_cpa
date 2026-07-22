@@ -92,6 +92,12 @@ def _cpa_dirs_sig(config: dict[str, Any]) -> tuple:
     return tuple(parts)
 
 
+# 单文件解析缓存：path -> (mtime_ns, size, 解析出的字段)
+# 5000+ 账号时避免每次重建索引都把全部 JSON 重新 read_text 一遍。
+_cpa_file_meta_cache: dict[str, tuple] = {}
+_CPA_FILE_META_CACHE_MAX = 50000
+
+
 def _mail_cache_sig(cfg: dict[str, Any]) -> tuple:
     try:
         max_aliases = max(1, int(cfg.get("hotmail_max_aliases_per_account", 5) or 5))
@@ -212,31 +218,54 @@ def list_cpa_index(config: dict[str, Any] | None = None) -> dict[str, dict[str, 
         if not directory.is_dir():
             continue
         for path in sorted(directory.glob("xai-*.json")):
-            email = ""
-            mint_method = ""
-            expired = ""
-            disabled = False
-            priority = 0
-            managed = False
-            managed_tier = ""
-            cool_until = ""
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                email = str(payload.get("email") or "").strip().lower()
-                mint_method = str(payload.get("mint_method") or payload.get("type") or "")
-                expired = str(payload.get("expired") or payload.get("expires_at") or "")
-                disabled = payload.get("disabled") is True
+                st = path.stat()
+            except OSError:
+                continue
+            cache_key = str(path)
+            cached = _cpa_file_meta_cache.get(cache_key)
+            if cached and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+                email, mint_method, expired, disabled, priority, managed, managed_tier, cool_until = cached[2:]
+            else:
+                email = ""
+                mint_method = ""
+                expired = ""
+                disabled = False
+                priority = 0
+                managed = False
+                managed_tier = ""
+                cool_until = ""
                 try:
-                    priority = int(payload.get("priority") or 0)
-                except (TypeError, ValueError):
-                    priority = 0
-                pool_meta = payload.get("_cpa_pool")
-                if isinstance(pool_meta, dict):
-                    managed = bool(pool_meta.get("managed"))
-                    managed_tier = str(pool_meta.get("tier") or pool_meta.get("status") or "").strip().lower()
-                    cool_until = str(pool_meta.get("cool_until") or "")
-            except Exception:
-                payload = {}
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    email = str(payload.get("email") or "").strip().lower()
+                    mint_method = str(payload.get("mint_method") or payload.get("type") or "")
+                    expired = str(payload.get("expired") or payload.get("expires_at") or "")
+                    disabled = payload.get("disabled") is True
+                    try:
+                        priority = int(payload.get("priority") or 0)
+                    except (TypeError, ValueError):
+                        priority = 0
+                    pool_meta = payload.get("_cpa_pool")
+                    if isinstance(pool_meta, dict):
+                        managed = bool(pool_meta.get("managed"))
+                        managed_tier = str(pool_meta.get("tier") or pool_meta.get("status") or "").strip().lower()
+                        cool_until = str(pool_meta.get("cool_until") or "")
+                except Exception:
+                    payload = {}
+                if len(_cpa_file_meta_cache) >= _CPA_FILE_META_CACHE_MAX:
+                    _cpa_file_meta_cache.clear()
+                _cpa_file_meta_cache[cache_key] = (
+                    st.st_mtime_ns,
+                    st.st_size,
+                    email,
+                    mint_method,
+                    expired,
+                    disabled,
+                    priority,
+                    managed,
+                    managed_tier,
+                    cool_until,
+                )
             if not email:
                 email = path.name[len("xai-") : -len(".json")].lower()
             if not email:
@@ -253,9 +282,9 @@ def list_cpa_index(config: dict[str, Any] | None = None) -> dict[str, dict[str, 
                 "pool_managed": managed,
                 "pool_tier": managed_tier,
                 "cool_until": cool_until,
-                "mtime": path.stat().st_mtime,
+                "mtime": st.st_mtime,
                 "location": "hotload" if hot and path.parent.resolve() == hot.resolve() else "auth_dir",
-                "size": path.stat().st_size,
+                "size": st.st_size,
             }
             if prev is None or item["mtime"] >= prev["mtime"]:
                 index[email] = item

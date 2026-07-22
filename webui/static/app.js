@@ -382,7 +382,9 @@ async function api(path, options = {}) {
   const payload = isJson ? await response.json() : await response.text();
   if (!response.ok) {
     const msg = (payload && payload.error) || (typeof payload === "string" ? payload : `HTTP ${response.status}`);
-    throw new Error(msg);
+    const error = new Error(msg);
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
@@ -2460,7 +2462,19 @@ async function pollActiveJob() {
     }
     const detailJobId = state.activeJobId || previousActiveId;
     if (!detailJobId) return;
-    const detail = await api(`/api/jobs/${detailJobId}?after=${state.logCursor}`);
+    let detail;
+    try {
+      detail = await api(`/api/jobs/${detailJobId}?after=${state.logCursor}`);
+    } catch (err) {
+      if (err && err.status === 404) {
+        // 任务记录是内存态，服务重启后旧任务 ID 会 404——停止轮询并提示
+        state.activeJobId = null;
+        state.activeJobKind = "";
+        toast("该任务记录已随服务重启清空，无法继续查看日志", true);
+        return;
+      }
+      throw err;
+    }
     state.activeJobKind = detail.kind || "";
     renderActiveJob(detail);
     renderGptJob(detail);

@@ -575,6 +575,10 @@ class CpaPoolMonitor:
         self._refill_lock = threading.Lock()
         self._last_refill_controller_at = 0.0
         self._refill_status: dict[str, Any] = {}
+        # _pool_metrics 单飞缓存：状态接口被频繁轮询，
+        # 5000+ 账号时每次全量重算会拖垮 AnyIO 线程池。
+        self._pool_metrics_lock = threading.Lock()
+        self._pool_metrics_cache: dict[str, Any] = {"at": 0.0, "value": None, "computing": False}
         self._load_state()
 
     def _repo(self) -> PoolStateDB:
@@ -1548,7 +1552,29 @@ class CpaPoolMonitor:
         repo.put_breaker(scope, current)
         self._breaker_cache[scope] = current
 
+    _POOL_METRICS_TTL_SEC = 15.0
+
     def _pool_metrics(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._pool_metrics_lock:
+            cached = self._pool_metrics_cache.get("value")
+            fresh = cached is not None and now - float(self._pool_metrics_cache.get("at") or 0) < self._POOL_METRICS_TTL_SEC
+            if fresh:
+                return dict(cached)
+            if self._pool_metrics_cache.get("computing"):
+                # 已有线程在重算：直接返回旧值，避免请求线程在 IO 上堆积
+                return dict(cached) if cached is not None else {}
+            self._pool_metrics_cache["computing"] = True
+        try:
+            metrics = self._compute_pool_metrics()
+        finally:
+            with self._pool_metrics_lock:
+                self._pool_metrics_cache["computing"] = False
+        with self._pool_metrics_lock:
+            self._pool_metrics_cache.update({"at": time.monotonic(), "value": dict(metrics)})
+        return metrics
+
+    def _compute_pool_metrics(self) -> dict[str, Any]:
         try:
             index = store.list_cpa_index()
         except Exception:
