@@ -260,6 +260,18 @@ async def _run_async(
                 await asyncio.sleep(2)
                 continue
             if err_code:
+                # 仅 registration_disallowed（OpenAI 业务拒绝）才冷却域名；
+                # 网络错误/sentinel/OTP 问题不触发，避免误伤。
+                if err_code == "registration_disallowed":
+                    try:
+                        import grok_register_ttk as reg
+
+                        reg.mark_cf_domain_cooldown(
+                            email.split("@", 1)[1] if "@" in email else email,
+                            log_callback=log,
+                        )
+                    except Exception:
+                        pass
                 raise GptRegisterError("create_account", f"{err_code}: {str(err)[:200]}")
             break
         else:

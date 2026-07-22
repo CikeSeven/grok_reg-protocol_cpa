@@ -1341,13 +1341,67 @@ def cloudflare_get_token(api_base, address, password, api_key=None):
     return None
 
 
-def _pick_cf_domain(domains):
-    """域名池抽取：cloudflare_domain_select = random（随机）| round_robin（轮换，默认）。"""
+_cf_domain_index = 0
+_cf_domain_cooldowns: dict = {}
+_cf_domain_cooldown_lock = threading.Lock()
+
+CF_DOMAIN_COOLDOWN_DEFAULT_SEC = 600
+
+
+def cf_domain_cooldown_remaining(domain: str) -> float:
+    with _cf_domain_cooldown_lock:
+        until = float(_cf_domain_cooldowns.get((domain or "").lower(), 0) or 0)
+    return max(0.0, until - time.time())
+
+
+def mark_cf_domain_cooldown(domain: str, seconds: float | None = None, log_callback=None) -> None:
+    """标记域名进入冷却（仅 registration_disallowed 等业务拒绝时调用）。
+
+    注意：网络错误 / sentinel 失败 / OTP 超时都不应调用本函数，避免误伤域名。
+    """
+    domain = (domain or "").strip().lower()
+    if not domain:
+        return
+    if seconds is None:
+        try:
+            seconds = float(config.get("cloudflare_domain_cooldown_sec", CF_DOMAIN_COOLDOWN_DEFAULT_SEC) or CF_DOMAIN_COOLDOWN_DEFAULT_SEC)
+        except Exception:
+            seconds = CF_DOMAIN_COOLDOWN_DEFAULT_SEC
+    until = time.time() + max(30.0, float(seconds))
+    with _cf_domain_cooldown_lock:
+        _cf_domain_cooldowns[domain] = until
+    if log_callback:
+        log_callback(f"[!] 域名 {domain} 进入冷却 {int(max(30.0, seconds))}s")
+
+
+def _pick_cf_domain(domains, log_callback=None, cancel_callback=None):
+    """域名池抽取：cloudflare_domain_select = random（随机）| round_robin（轮换，默认）。
+
+    冷却中的域名跳过；全部冷却时自动暂停等待最早解冻（可取消）。
+    """
+    available = [d for d in domains if cf_domain_cooldown_remaining(d) <= 0]
+    if not available:
+        # 域名池全部冷却：暂停注册，等待最早解冻的域名
+        wait_map = {d: cf_domain_cooldown_remaining(d) for d in domains}
+        earliest = min(wait_map, key=wait_map.get)
+        wait_s = max(1.0, wait_map[earliest])
+        if log_callback:
+            log_callback(
+                f"[!] 域名池全部冷却中（{len(domains)} 个），暂停 {int(wait_s)}s 等待 {earliest} 解冻"
+            )
+        deadline = time.time() + wait_s + 1
+        while time.time() < deadline:
+            raise_if_cancelled(cancel_callback)
+            if cf_domain_cooldown_remaining(earliest) <= 0:
+                break
+            sleep_with_cancel(2, cancel_callback)
+        available = [d for d in domains if cf_domain_cooldown_remaining(d) <= 0] or domains
+
     mode = str(config.get("cloudflare_domain_select", "round_robin") or "round_robin").strip().lower()
     if mode == "random":
-        return random.choice(domains)
+        return random.choice(available)
     global _cf_domain_index
-    domain = domains[_cf_domain_index % len(domains)]
+    domain = available[_cf_domain_index % len(available)]
     _cf_domain_index += 1
     return domain
 
