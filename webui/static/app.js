@@ -1494,6 +1494,7 @@ const EXTRA_FIELDS = [
   ["cloudflare_auth_mode", "Cloudflare 认证方式", "text"],
   ["cloudflare_domain_select", "域名池抽取 random/round_robin", "text"],
   ["cloudflare_domain_cooldown_sec", "域名冷却秒（被拒后）", "number"],
+  ["cloudflare_domain_otp_strikes", "连续收码超时冷却阈值（次）", "number"],
   ["yyds_api_key", "YYDS API Key", "password"],
   ["yyds_jwt", "YYDS JWT", "password"],
   ["enable_nsfw", "注册开启 NSFW", "bool"],
@@ -1545,7 +1546,7 @@ const PAGE_SETTINGS = {
     title: "邮箱与收码配置",
     eyebrow: "MAIL CONFIG",
     groups: [
-      ["服务商", ["email_provider", "defaultDomains", "cloudflare_domain_select", "cloudflare_domain_cooldown_sec"]],
+      ["服务商", ["email_provider", "defaultDomains", "cloudflare_domain_select", "cloudflare_domain_cooldown_sec", "cloudflare_domain_otp_strikes"]],
       ["Hotmail / Outlook", ["hotmail_accounts_file", "hotmail_protocol", "hotmail_max_aliases_per_account", "hotmail_alias_mode", "hotmail_alias_random_length", "hotmail_poll_interval", "hotmail_recent_seconds"]],
       ["CloudMail", ["cloudmail_url", "cloudmail_admin_email", "cloudmail_password"]],
       ["其他服务商", ["cloudflare_api_base", "cloudflare_api_key", "cloudflare_admin_password", "cloudflare_auth_mode", "duckmail_api_key", "mailnest_api_key", "mailnest_project_code", "yyds_api_key", "yyds_jwt"]],

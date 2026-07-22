@@ -880,6 +880,7 @@ PUBLIC_CONFIG_KEYS = [
     "cloudflare_api_base",
     "cloudflare_domain_select",
     "cloudflare_domain_cooldown_sec",
+    "cloudflare_domain_otp_strikes",
     "cloudflare_api_key",
     "cloudflare_admin_password",
     "cloudflare_auth_mode",

@@ -1374,6 +1374,48 @@ def mark_cf_domain_cooldown(domain: str, seconds: float | None = None, log_callb
         log_callback(f"[!] 域名 {domain} 进入冷却 {int(max(30.0, seconds))}s")
 
 
+_cf_otp_strikes: dict = {}
+
+
+def _cf_pool_domains() -> list:
+    raw = str(config.get("defaultDomains", "") or "")
+    return [x.strip().lower() for x in re.split(r"[,，\s]+", raw) if x.strip()]
+
+
+def cf_note_otp_success(domain: str) -> None:
+    """收码成功：重置该域名的连续超时计数。"""
+    with _cf_domain_cooldown_lock:
+        _cf_otp_strikes.pop((domain or "").strip().lower(), None)
+
+
+def cf_note_otp_failure(domain: str, log_callback=None) -> bool:
+    """收码超时/失败：累计连续次数，达到阈值则冷却该域名。
+
+    只统计域名池（defaultDomains）内的域名；hotmail 等外部域不计（避免误伤整个池）。
+    返回 True 表示已触发冷却。
+    """
+    domain = (domain or "").strip().lower()
+    if not domain or domain not in _cf_pool_domains():
+        return False
+    try:
+        threshold = max(1, int(config.get("cloudflare_domain_otp_strikes", 3) or 3))
+    except Exception:
+        threshold = 3
+    with _cf_domain_cooldown_lock:
+        strikes = int(_cf_otp_strikes.get(domain, 0)) + 1
+        _cf_otp_strikes[domain] = strikes
+    if strikes >= threshold:
+        with _cf_domain_cooldown_lock:
+            _cf_otp_strikes[domain] = 0
+        if log_callback:
+            log_callback(f"[!] 域名 {domain} 连续 {strikes} 次收码超时，进入冷却")
+        mark_cf_domain_cooldown(domain)
+        return True
+    if log_callback:
+        log_callback(f"[Debug] 域名 {domain} 连续收码超时 {strikes}/{threshold}")
+    return False
+
+
 def _pick_cf_domain(domains, log_callback=None, cancel_callback=None):
     """域名池抽取：cloudflare_domain_select = random（随机）| round_robin（轮换，默认）。
 

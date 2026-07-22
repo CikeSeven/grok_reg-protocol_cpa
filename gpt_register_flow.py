@@ -345,13 +345,24 @@ def run_gpt_register(
     def get_code() -> str:
         import grok_register_ttk as reg
 
-        return reg.get_oai_code(
-            dev_token,
-            email,
-            timeout=otp_timeout,
-            log_callback=log,
-            cancel_callback=cancel,
-        )
+        domain = email.split("@", 1)[1] if "@" in email else ""
+        try:
+            code = reg.get_oai_code(
+                dev_token,
+                email,
+                timeout=otp_timeout,
+                log_callback=log,
+                cancel_callback=cancel,
+            )
+            reg.cf_note_otp_success(domain)
+            return code
+        except Exception:
+            # 连续收码超时累计计数，达到阈值自动冷却该域名（仅池内域名）
+            try:
+                reg.cf_note_otp_failure(domain, log_callback=log)
+            except Exception:
+                pass
+            raise
 
     log(f"[*] 身份: {name} / {birthdate}（纯协议，impersonate={impersonate}）")
     result = asyncio.run(
