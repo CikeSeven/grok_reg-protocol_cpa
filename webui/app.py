@@ -115,7 +115,10 @@ def create_app() -> FastAPI:
     @app.get("/api/overview")
     def overview() -> dict[str, Any]:
         data = store.overview()
-        active = runner.active_job()
+        actives = runner.active_jobs()
+        data["active_jobs"] = [j.public_dict() for j in actives]
+        # 兼容字段：最近开始的活动任务
+        active = actives[0] if actives else None
         data["active_job"] = active.public_dict() if active else None
         data["jobs"] = runner.list_jobs()[:10]
         return data

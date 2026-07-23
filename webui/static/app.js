@@ -86,15 +86,19 @@ const state = {
   gptFlow: null,
   _gptHeadlessSeeded: false,
   jobs: [],
-  activeJobId: null,
-  activeJobStarted: "",
+  // 泳道化活动任务：grok（注册/补号）与 gpt 互不阻塞，可并行
+  activeJobIds: { grok: null, gpt: null },
+  activeJobStarted: { grok: "", gpt: "" },
   logCursor: 0,
+  logCursorGpt: 0,
   logCount: 0,
   config: null,
   pollTimer: null,
   clockTimer: null,
   _headlessSeeded: false,
 };
+
+const laneOfKind = (kind) => (kind === "gpt_register" ? "gpt" : "grok");
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -544,9 +548,21 @@ function renderOverview() {
     state._protocolSeeded = true;
   }
 
-  renderPipeline(o);
-  renderActiveJob(o.active_job);
-  renderGptOverview(o);
+  const actives = Array.isArray(o.active_jobs) && o.active_jobs.length
+    ? o.active_jobs
+    : (o.active_job ? [o.active_job] : []);
+  const grokJob = actives.find((j) => laneOfKind(j.kind) === "grok") || null;
+  const gptJob = actives.find((j) => laneOfKind(j.kind) === "gpt") || null;
+  renderPipeline(o, grokJob);
+  renderActiveJob(grokJob);
+  renderGptOverview(o, gptJob);
+  // 侧栏活动任务徽标：两条泳道合并计数
+  const runningCount = actives.filter((j) => j.status === "running" || j.status === "queued").length;
+  const navActive = $("#nav-jobs-active");
+  if (navActive) {
+    navActive.hidden = runningCount === 0;
+    navActive.textContent = runningCount > 9 ? "9+" : String(runningCount);
+  }
 }
 
 async function loadOverview() {
@@ -555,8 +571,7 @@ async function loadOverview() {
   return state.overview;
 }
 
-function renderPipeline(o) {
-  const job = o.active_job;
+function renderPipeline(o, job = null) {
   const running = job && (job.status === "running" || job.status === "queued");
   const steps = {
     mail: { value: o.mail_total ?? 0, state: (o.mail_total ?? 0) > 0 ? "done" : "" },
@@ -620,20 +635,19 @@ function renderActiveJob(job) {
   }
 
   if (!job) {
-    state.activeJobId = null;
-    state.activeJobStarted = "";
+    state.activeJobIds.grok = null;
+    state.activeJobStarted.grok = "";
     statusEl.className = "pill idle";
     statusEl.textContent = "空闲";
     idleEl.hidden = false;
     detailEl.hidden = true;
     stopBtn.disabled = true;
     navActive.hidden = true;
-    renderGptJob(null);
     return;
   }
 
-  state.activeJobId = job.id;
-  state.activeJobStarted = job.started_at || state.activeJobStarted;
+  state.activeJobIds.grok = job.id;
+  state.activeJobStarted.grok = job.started_at || state.activeJobStarted.grok;
   const running = job.status === "running" || job.status === "queued";
 
   statusEl.className = `pill ${job.status}`;
@@ -652,7 +666,7 @@ function renderActiveJob(job) {
     srcChip.hidden = !source;
     srcChip.textContent = source === "cpa_pool_auto_refill" ? "号池自动补号" : source;
   }
-  $("#active-job-elapsed").textContent = fmtElapsed(state.activeJobStarted);
+  $("#active-job-elapsed").textContent = fmtElapsed(state.activeJobStarted.grok);
 
   const s = job.stats || {};
   if (job.kind === "register") {
@@ -724,7 +738,7 @@ function renderGptFlow() {
   $("#gpt-m-har-source").textContent = flow.source || "注册GPT.har";
 }
 
-function renderGptOverview(o = {}) {
+function renderGptOverview(o = {}, gptJob = null) {
   if (!$("#gpt-m-mail")) return;
   const proxyTotal = state.proxies.length || Number(o.proxy_total || 0);
   const gptProvider = o.gpt_email_provider || o.email_provider || "-";
@@ -739,8 +753,8 @@ function renderGptOverview(o = {}) {
     $("#gpt-meta-browser").textContent = o.register_headless ? "headless" : "headed";
     state._gptHeadlessSeeded = true;
   }
-  renderGptPipeline(o.active_job || null);
-  renderGptJob(o.active_job || null);
+  renderGptPipeline(gptJob);
+  renderGptJob(gptJob);
 }
 
 function renderGptPipeline(job) {
@@ -765,6 +779,10 @@ function renderGptJob(job) {
   const detailEl = $("#gpt-active-job-detail");
   const isGpt = job && job.kind === "gpt_register";
   if (!isGpt) {
+    if (!job) {
+      state.activeJobIds.gpt = null;
+      state.activeJobStarted.gpt = "";
+    }
     statusEl.className = "pill idle";
     statusEl.textContent = job ? `空闲（${kindText[job.kind] || job.kind} 见注册控制台）` : "空闲";
     idleEl.hidden = false;
@@ -773,6 +791,8 @@ function renderGptJob(job) {
     renderGptPipeline(null);
     return;
   }
+  state.activeJobIds.gpt = job.id;
+  state.activeJobStarted.gpt = job.started_at || state.activeJobStarted.gpt;
   const running = job.status === "running" || job.status === "queued";
   const s = job.stats || {};
   statusEl.className = `pill ${job.status}`;
@@ -782,7 +802,7 @@ function renderGptJob(job) {
   detailEl.hidden = false;
   $("#gpt-active-job-id").textContent = job.id || "-";
   $("#gpt-active-job-kind").textContent = kindText[job.kind] || job.kind;
-  $("#gpt-active-job-elapsed").textContent = fmtElapsed(job.started_at || state.activeJobStarted);
+  $("#gpt-active-job-elapsed").textContent = fmtElapsed(job.started_at || state.activeJobStarted.gpt);
   $("#gpt-active-job-stats").innerHTML =
     statCell("目标", s.target ?? 0) +
     statCell("阶段", `${s.stage_index ?? 0}/${s.steps ?? 0}`, "accent") +
@@ -2447,7 +2467,6 @@ async function loadJobs() {
 
 async function pollActiveJob() {
   try {
-    const previousActiveId = state.activeJobId;
     state.overview = await api("/api/overview");
     renderOverview();
     if (state.view === "cpa") {
@@ -2460,32 +2479,38 @@ async function pollActiveJob() {
         renderCpa();
       }
     }
-    const detailJobId = state.activeJobId || previousActiveId;
-    if (!detailJobId) return;
-    let detail;
-    try {
-      detail = await api(`/api/jobs/${detailJobId}?after=${state.logCursor}`);
-    } catch (err) {
-      if (err && err.status === 404) {
-        // 任务记录是内存态，服务重启后旧任务 ID 会 404——停止轮询并提示
-        state.activeJobId = null;
-        state.activeJobKind = "";
-        toast("该任务记录已随服务重启清空，无法继续查看日志", true);
-        return;
+    // 双泳道轮询：grok 与 gpt 任务各自独立拉取详情与日志
+    const lanes = [
+      ["grok", state.activeJobIds.grok],
+      ["gpt", state.activeJobIds.gpt],
+    ].filter(([, id]) => id);
+    for (const [lane, jobId] of lanes) {
+      const cursorKey = lane === "gpt" ? "logCursorGpt" : "logCursor";
+      let detail;
+      try {
+        detail = await api(`/api/jobs/${jobId}?after=${state[cursorKey]}`);
+      } catch (err) {
+        if (err && err.status === 404) {
+          // 任务记录是内存态，服务重启后旧任务 ID 会 404——停止轮询并提示
+          state.activeJobIds[lane] = null;
+          state.activeJobKind = "";
+          toast("该任务记录已随服务重启清空，无法继续查看日志", true);
+          continue;
+        }
+        throw err;
       }
-      throw err;
-    }
-    state.activeJobKind = detail.kind || "";
-    renderActiveJob(detail);
-    renderGptJob(detail);
-    if (detail.logs && detail.logs.length) {
-      appendLogs(detail.logs, detail.kind === "gpt_register" ? "gpt" : "grok");
-    }
-    state.logCursor = detail.log_seq || state.logCursor;
-    if (["completed", "failed", "stopped"].includes(detail.status)) {
-      if (state.view === "accounts") loadAccounts().catch(() => {});
-      if (state.view === "cpa") loadCpa().catch(() => {});
-      state.activeJobId = null;
+      state.activeJobKind = detail.kind || "";
+      if (lane === "gpt") renderGptJob(detail);
+      else renderActiveJob(detail);
+      if (detail.logs && detail.logs.length) {
+        appendLogs(detail.logs, detail.kind === "gpt_register" ? "gpt" : "grok");
+      }
+      state[cursorKey] = detail.log_seq || state[cursorKey];
+      if (["completed", "failed", "stopped"].includes(detail.status)) {
+        if (state.view === "accounts") loadAccounts().catch(() => {});
+        if (state.view === "cpa") loadCpa().catch(() => {});
+        state.activeJobIds[lane] = null;
+      }
     }
   } catch (err) {
     $("#side-status-text").textContent = "连接异常，重试中…";
@@ -2521,11 +2546,19 @@ async function startRegister() {
   try {
     const url = target === "gpt" ? "/api/jobs/gpt-register" : "/api/jobs/register";
     const job = await api(url, { method: "POST", body: JSON.stringify(body) });
-    state.activeJobId = job.id;
-    state.logCursor = 0;
-    resetLogs("// 任务已创建，正在初始化…", "grok");
-    appendLogs([`任务已创建: ${job.id}`]);
-    renderActiveJob(job);
+    const lane = laneOfKind(job.kind);
+    state.activeJobIds[lane] = job.id;
+    if (lane === "gpt") {
+      state.logCursorGpt = 0;
+      resetLogs("// GPT 工作流任务已创建…", "gpt");
+      appendLogs([`GPT 工作流任务已创建: ${job.id}`], "gpt");
+      renderGptJob(job);
+    } else {
+      state.logCursor = 0;
+      resetLogs("// 任务已创建，正在初始化…", "grok");
+      appendLogs([`任务已创建: ${job.id}`]);
+      renderActiveJob(job);
+    }
     toast("注册任务已启动");
   } catch (err) {
     toast(err.message, true);
@@ -2557,12 +2590,11 @@ async function startGptRegister() {
   }
   try {
     const job = await api("/api/jobs/gpt-register", { method: "POST", body: JSON.stringify(body) });
-    state.activeJobId = job.id;
-    state.activeJobStarted = job.started_at || "";
-    state.logCursor = 0;
+    state.activeJobIds.gpt = job.id;
+    state.activeJobStarted.gpt = job.started_at || "";
+    state.logCursorGpt = 0;
     resetLogs("// GPT 工作流任务已创建…", "gpt");
-    appendLogs([`GPT 工作流任务已创建: ${job.id}`]);
-    renderActiveJob(job);
+    appendLogs([`GPT 工作流任务已创建: ${job.id}`], "gpt");
     renderGptJob(job);
     toast("GPT 工作流任务已启动");
   } catch (err) {
@@ -2574,7 +2606,8 @@ async function stopJob(jobId) {
   if (!jobId) return;
   try {
     const job = await api(`/api/jobs/${jobId}/stop`, { method: "POST", body: "{}" });
-    renderActiveJob(job);
+    if (laneOfKind(job.kind) === "gpt") renderGptJob(job);
+    else renderActiveJob(job);
     toast("已发送停止请求");
     loadJobs().catch(() => {});
   } catch (err) {
@@ -2585,7 +2618,7 @@ async function stopJob(jobId) {
 async function startBackfill(payload, notice) {
   try {
     const job = await api("/api/jobs/backfill", { method: "POST", body: JSON.stringify(payload) });
-    state.activeJobId = job.id;
+    state.activeJobIds.grok = job.id;
     state.logCursor = 0;
     resetLogs("// 补 mint 任务已创建…", "grok");
     appendLogs([`${notice}: ${job.id}`]);
@@ -2752,14 +2785,14 @@ function bindEvents() {
     if (e.target.checked) $("#reg-protocol").checked = true;
     syncRegisterProtocolToggles();
   });
-  $("#stop-active-job").addEventListener("click", () => stopJob(state.activeJobId));
+  $("#stop-active-job").addEventListener("click", () => stopJob(state.activeJobIds.grok));
   $("#clear-log").addEventListener("click", () => resetLogs());
 
   /* GPT workbench */
   $("#gpt-refresh-flow").addEventListener("click", () =>
     loadGptFlow().then(() => toast("GPT 流程已刷新")).catch((e) => toast(`流程刷新失败，已使用内置摘要: ${e.message}`, true)));
   $("#start-gpt-register").addEventListener("click", startGptRegister);
-  $("#gpt-stop-active-job").addEventListener("click", () => stopJob(state.activeJobId));
+  $("#gpt-stop-active-job").addEventListener("click", () => stopJob(state.activeJobIds.gpt));
   $("#gpt-clear-log").addEventListener("click", () => resetLogs("// 等待 GPT 工作流启动，日志将同步显示在这里"));
   $("#gpt-headless").addEventListener("change", () => {
     $("#gpt-meta-browser").textContent = $("#gpt-headless").checked ? "headless" : "headed";
@@ -3440,10 +3473,19 @@ function bindEvents() {
     }
     const focus = e.target.closest("[data-focus-job]");
     if (focus) {
-      state.activeJobId = focus.dataset.focusJob;
-      state.logCursor = 0;
-      resetLogs("// 加载历史任务日志…", "grok");
-      setView("console");
+      const jobId = focus.dataset.focusJob;
+      const jobInfo = (state.jobs || []).find((j) => j.id === jobId) || {};
+      const lane = laneOfKind(jobInfo.kind);
+      state.activeJobIds[lane] = jobId;
+      if (lane === "gpt") {
+        state.logCursorGpt = 0;
+        resetLogs("// 加载历史任务日志…", "gpt");
+        setView("gpt");
+      } else {
+        state.logCursor = 0;
+        resetLogs("// 加载历史任务日志…", "grok");
+        setView("console");
+      }
       openJobs(false);
       pollActiveJob();
     }
@@ -3461,7 +3503,9 @@ async function boot() {
   try {
     state.overview = await api("/api/overview");
     renderOverview();
-    if (state.overview.active_job) state.activeJobId = state.overview.active_job.id;
+    for (const j of state.overview.active_jobs || []) {
+      state.activeJobIds[laneOfKind(j.kind)] = j.id;
+    }
   } catch (err) {
     toast(`加载失败: ${err.message}`, true);
     $("#side-status-text").textContent = "服务连接失败";
@@ -3469,9 +3513,13 @@ async function boot() {
   state.pollTimer = setInterval(pollActiveJob, 1500);
   loadProxies().catch(() => {});
   state.clockTimer = setInterval(() => {
-    if (state.activeJobStarted) {
+    if (state.activeJobStarted.grok) {
       const el = $("#active-job-elapsed");
-      if (el && !$("#active-job-detail").hidden) el.textContent = fmtElapsed(state.activeJobStarted);
+      if (el && !$("#active-job-detail").hidden) el.textContent = fmtElapsed(state.activeJobStarted.grok);
+    }
+    if (state.activeJobStarted.gpt) {
+      const el = $("#gpt-active-job-elapsed");
+      if (el && !$("#gpt-active-job-detail").hidden) el.textContent = fmtElapsed(state.activeJobStarted.gpt);
     }
   }, 1000);
 }

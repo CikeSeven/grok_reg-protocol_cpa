@@ -2700,7 +2700,7 @@ class CpaPoolMonitor:
         try:
             from .jobs import runner
 
-            active_job = runner.active_job()
+            active_job = runner.active_job(lane="grok")
             if active_job and active_job.status in {"queued", "running"}:
                 options = active_job.options or {}
                 stats = active_job.stats or {}

@@ -250,12 +250,20 @@ class Job:
         return payload
 
 
+JOB_LANES = {"gpt_register": "gpt", "register": "grok", "backfill": "grok"}
+
+
+def job_lane(kind: str) -> str:
+    """任务泳道：gpt_register 与 Grok 注册/补号互不阻塞，同泳道串行。"""
+    return JOB_LANES.get(str(kind or ""), "grok")
+
+
 class JobRunner:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._jobs: dict[str, Job] = {}
         self._order: deque[str] = deque(maxlen=100)
-        self._active_id: str | None = None
+        self._active_ids: dict[str, str | None] = {"grok": None, "gpt": None}
 
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -268,22 +276,36 @@ class JobRunner:
                 raise KeyError(job_id)
             return job
 
-    def active_job(self) -> Job | None:
+    def active_jobs(self) -> list[Job]:
         with self._lock:
-            if not self._active_id:
-                return None
-            return self._jobs.get(self._active_id)
+            jobs = [
+                self._jobs[jid]
+                for jid in self._active_ids.values()
+                if jid and jid in self._jobs
+            ]
+            jobs.sort(key=lambda j: str(j.started_at or j.created_at or ""), reverse=True)
+            return jobs
+
+    def active_job(self, lane: str | None = None) -> Job | None:
+        with self._lock:
+            if lane is not None:
+                jid = self._active_ids.get(lane)
+                return self._jobs.get(jid) if jid else None
+            jobs = self.active_jobs()
+            return jobs[0] if jobs else None
 
     def _register_job(self, kind: str, options: dict[str, Any]) -> Job:
+        lane = job_lane(kind)
         with self._lock:
-            if self._active_id:
-                active = self._jobs.get(self._active_id)
+            active_id = self._active_ids.get(lane)
+            if active_id:
+                active = self._jobs.get(active_id)
                 if active and active.status in {"queued", "running"}:
                     raise RuntimeError(f"已有任务进行中: {active.kind} ({active.id})")
             job = Job(id=uuid.uuid4().hex[:12], kind=kind, options=options)
             self._jobs[job.id] = job
             self._order.append(job.id)
-            self._active_id = job.id
+            self._active_ids[lane] = job.id
             return job
 
     def stop_job(self, job_id: str) -> dict[str, Any]:
@@ -292,19 +314,20 @@ class JobRunner:
             return job.public_dict()
         job.cancel_event.set()
         job.append_log("收到停止请求")
-        # best-effort browser teardown
-        try:
-            import grok_register_ttk as reg
+        # best-effort browser teardown（仅 Grok 泳道；GPT 是纯协议，不应误杀注册浏览器）
+        if job_lane(job.kind) == "grok":
+            try:
+                import grok_register_ttk as reg
 
-            reg.shutdown_browser()
-        except Exception:
-            pass
-        try:
-            from cpa_xai.browser_confirm import shutdown_mint_browsers
+                reg.shutdown_browser()
+            except Exception:
+                pass
+            try:
+                from cpa_xai.browser_confirm import shutdown_mint_browsers
 
-            shutdown_mint_browsers()
-        except Exception:
-            pass
+                shutdown_mint_browsers()
+            except Exception:
+                pass
         return job.public_dict()
 
     def start_register(self, options: dict[str, Any]) -> dict[str, Any]:
@@ -480,8 +503,9 @@ class JobRunner:
         job.error = error
         job.finished_at = _utc_now()
         with self._lock:
-            if self._active_id == job.id:
-                self._active_id = None
+            lane = job_lane(job.kind)
+            if self._active_ids.get(lane) == job.id:
+                self._active_ids[lane] = None
 
     def _run_register(self, job: Job) -> None:
         import register_cli as cli
