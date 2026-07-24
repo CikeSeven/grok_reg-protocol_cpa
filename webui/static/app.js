@@ -456,6 +456,30 @@ function fmtElapsed(startedIso) {
   return h > 0 ? `${String(h).padStart(2, "0")}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
+// 相对时间：「2026-07-23 14:03:09」/ ISO → 刚刚 / N秒前 / N分钟前 / N小时前 / N天前
+function relativeTime(ts) {
+  if (!ts) return "-";
+  let ms;
+  if (typeof ts === "number") {
+    ms = ts > 1e12 ? ts : ts * 1000;
+  } else {
+    const text = String(ts).trim();
+    if (!text) return "-";
+    // 「YYYY-MM-DD HH:mm:ss」按本地时间解析（服务器与浏览器同为北京时间）
+    const normalized = text.includes("T") ? text : text.replace(" ", "T");
+    ms = Date.parse(normalized);
+    if (Number.isNaN(ms)) return text;
+  }
+  const diff = Math.floor((Date.now() - ms) / 1000);
+  if (diff < 0) return "刚刚";
+  if (diff < 10) return "刚刚";
+  if (diff < 60) return `${diff}秒前`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
+  if (diff < 7 * 86400) return `${Math.floor(diff / 86400)}天前`;
+  return String(ts).slice(0, 16);
+}
+
 /* ── views ── */
 
 function setToolPage(page, updateHash = true) {
@@ -2047,7 +2071,7 @@ function renderMailTool(data = {}) {
     if (selected) tr.classList.add("selected");
     const authText = row.auth_type === "oauth" ? "OAuth" : "密码";
     const codeCell = row.code
-      ? `<span class="mail-code-value">${esc(row.code)}<button class="icon-btn" type="button" data-copy-mail-code="${esc(row.code)}" title="复制验证码"><svg><use href="#i-file"/></svg></button></span><small class="table-sub" title="${esc(row.subject || "")}">${esc(row.message_at || row.subject || "-")}</small>`
+      ? `<span class="mail-code-value">${esc(row.code)}<button class="icon-btn" type="button" data-copy-mail-code="${esc(row.code)}" title="复制验证码"><svg><use href="#i-file"/></svg></button></span><small class="table-sub" title="${esc(row.message_at || "")} ${esc(row.subject || "")}">${esc(row.message_at ? relativeTime(row.message_at) : row.subject || "-")}</small>`
       : `<span class="mono">-</span><small class="table-sub">${esc(row.subject || "")}</small>`;
     tr.innerHTML = `
       <td class="c-check"><input type="checkbox" data-mail-tool-email="${esc(row.email)}" ${selected ? "checked" : ""}></td>
@@ -2189,7 +2213,9 @@ function renderMailReaderMessage() {
   $("#mail-reader-message-subject").textContent = message.subject || "(无主题)";
   $("#mail-reader-sender").textContent = message.sender || "-";
   $("#mail-reader-recipient").textContent = message.recipient || state.mailReader.email || "-";
-  $("#mail-reader-time").textContent = message.received_at || "-";
+  const timeEl = $("#mail-reader-time");
+  timeEl.textContent = relativeTime(message.received_at);
+  timeEl.title = message.received_at || "";
   $("#mail-reader-body").textContent = message.body || message.preview || "(无正文)";
   $("#mail-reader-code").hidden = !message.code;
   $("#mail-reader-code-value").textContent = message.code || "";
@@ -2227,7 +2253,8 @@ function renderMailReader() {
     const sender = document.createElement("strong");
     sender.textContent = message.sender || "未知发件人";
     const time = document.createElement("time");
-    time.textContent = message.received_at || "";
+    time.textContent = relativeTime(message.received_at);
+    time.title = message.received_at || "";
     top.append(sender, time);
 
     const subject = document.createElement("span");
